@@ -32,7 +32,9 @@ from app.schemas import (
     ProductOut,
     ProductUpdate,
     PurchaseCreate,
+    PurchaseImportResultOut,
     PurchaseOut,
+    PurchaseRowsImportIn,
     SaleCreate,
     SaleOut,
     SalesRowsImportIn,
@@ -45,7 +47,7 @@ from app.schemas import (
     ProductPerformanceOut,
 )
 from app.services import reports as report_service
-from app.services.import_sales import import_sales_file, import_sales_rows, preview_sales_file
+from app.services.import_sales import import_purchase_rows, import_sales_file, import_sales_rows, preview_sales_file
 from app.services.import_stock import import_stock_file, preview_stock_file
 from app.services.kygs_import import import_kygs_workbook
 from app.services.ocr_sales import preview_sales_photo, suggest_products
@@ -538,9 +540,10 @@ async def run_import(
 @router.post("/imports/sales/ocr-preview", response_model=OcrPreviewOut)
 async def ocr_preview_sales_photo(
     file: UploadFile = File(...),
+    mode: str = Form("sale"),
     db: Session = Depends(get_db),
 ):
-    """OCR a handwritten / photographed sales report into editable preview rows."""
+    """OCR a handwritten / photographed sales or purchase report into editable rows."""
     from app.core.config import settings
 
     filename = file.filename or "sales-photo.jpg"
@@ -551,8 +554,9 @@ async def ocr_preview_sales_photo(
         raise HTTPException(400, "Empty image upload")
     dest = settings.upload_dir / f"ocr_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{filename}"
     dest.write_bytes(content)
+    ocr_mode = "purchase" if mode == "purchase" else "sale"
     try:
-        return preview_sales_photo(db, filename, content)
+        return preview_sales_photo(db, filename, content, mode=ocr_mode)
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
     except ValueError as exc:
@@ -569,6 +573,47 @@ def confirm_sales_rows(payload: SalesRowsImportIn, db: Session = Depends(get_db)
             payload.filename or "ocr-sales",
             rows,
             deduct_stock=payload.deduct_stock,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/imports/purchases/ocr-preview", response_model=OcrPreviewOut)
+async def ocr_preview_purchase_photo(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """OCR a handwritten purchase / delivery receipt into editable receive rows."""
+    from app.core.config import settings
+
+    filename = file.filename or "purchase-photo.jpg"
+    if not re_search_image(filename, file.content_type):
+        raise HTTPException(400, "Upload a photo (jpg, png, webp, heic, bmp)")
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "Empty image upload")
+    dest = settings.upload_dir / f"ocr_po_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{filename}"
+    dest.write_bytes(content)
+    try:
+        return preview_sales_photo(db, filename, content, mode="purchase")
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/imports/purchases/confirm-rows", response_model=PurchaseImportResultOut)
+def confirm_purchase_rows(payload: PurchaseRowsImportIn, db: Session = Depends(get_db)):
+    """Confirm corrected OCR rows as a purchase (stock increase)."""
+    rows = [r.model_dump() for r in payload.rows]
+    try:
+        return import_purchase_rows(
+            db,
+            payload.filename or "ocr-purchase",
+            rows,
+            supplier_id=payload.supplier_id,
+            notes=payload.notes,
+            purchase_date=payload.purchase_date,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

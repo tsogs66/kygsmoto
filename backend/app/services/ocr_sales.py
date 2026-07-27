@@ -242,13 +242,14 @@ def suggest_products(db: Session, query: str, limit: int = 8) -> list[dict]:
             "sku": p.sku,
             "name": p.name,
             "sell_price": p.sell_price,
+            "cost_price": p.cost_price,
             "stock_qty": p.stock_qty,
             "score": round(score, 1),
         })
     return out
 
 
-def match_ocr_rows(db: Session, rows: list[dict]) -> list[dict]:
+def match_ocr_rows(db: Session, rows: list[dict], mode: str = "sale") -> list[dict]:
     matched = unmatched = 0
     total_qty = 0.0
     enriched = []
@@ -261,7 +262,6 @@ def match_ocr_rows(db: Session, rows: list[dict]) -> list[dict]:
         if not product and (sku or name):
             suggestions = suggest_products(db, f"{sku or ''} {name or ''}".strip())
             if suggestions:
-                # Auto-pick top suggestion if strong
                 top = suggestions[0]
                 if top["score"] >= 70:
                     product = db.query(Product).get(top["id"])
@@ -276,17 +276,18 @@ def match_ocr_rows(db: Session, rows: list[dict]) -> list[dict]:
         if product:
             matched += 1
             total_qty += qty
+            default_price = product.cost_price if mode == "purchase" else product.sell_price
             if entry.get("unit_price") in (None, 0, 0.0):
-                entry["unit_price"] = product.sell_price
+                entry["unit_price"] = default_price
             entry["status"] = "matched"
-            entry["message"] = f"Matched {product.sku} — review before import"
+            verb = "purchase receive" if mode == "purchase" else "sale import"
+            entry["message"] = f"Matched {product.sku} — review before {verb}"
         else:
             unmatched += 1
             entry["status"] = "unmatched"
             entry["message"] = "Select the correct inventory item"
         enriched.append(entry)
 
-    # Always offer a few blank editable rows for manual additions
     next_no = (enriched[-1]["row_number"] + 1) if enriched else 1
     for i in range(3):
         enriched.append({
@@ -310,11 +311,10 @@ def match_ocr_rows(db: Session, rows: list[dict]) -> list[dict]:
     return enriched
 
 
-def preview_sales_photo(db: Session, filename: str, content: bytes) -> dict:
+def preview_sales_photo(db: Session, filename: str, content: bytes, mode: str = "sale") -> dict:
     ocr = extract_text_from_image(content, filename)
     parsed = parse_ocr_lines(ocr["raw_text"]) if ocr["raw_text"] else []
     if not parsed:
-        # Seed empty editable rows when OCR finds nothing
         parsed = [
             {
                 "row_number": i,
@@ -331,10 +331,11 @@ def preview_sales_photo(db: Session, filename: str, content: bytes) -> dict:
             }
             for i in range(1, 6)
         ]
-    rows = match_ocr_rows(db, parsed)
+    rows = match_ocr_rows(db, parsed, mode=mode)
     matched = sum(1 for r in rows if r["status"] == "matched")
     unmatched = sum(1 for r in rows if r["status"] == "unmatched")
     total_qty = sum(float(r.get("quantity") or 0) for r in rows if r["status"] == "matched")
+    kind = "purchase receive" if mode == "purchase" else "sales import"
     return {
         "filename": filename,
         "engine": ocr["engine"],
@@ -343,9 +344,10 @@ def preview_sales_photo(db: Session, filename: str, content: bytes) -> dict:
         "matched_count": matched,
         "unmatched_count": unmatched,
         "total_qty": total_qty,
+        "mode": mode,
         "message": (
-            "Review OCR rows, select the correct items, then confirm import."
+            f"Review OCR rows, select inventory items, then confirm {kind}."
             if ocr["raw_text"]
-            else "OCR could not read the photo clearly. Enter lines manually while viewing the image."
+            else f"OCR could not read the photo clearly. Enter lines manually for {kind}."
         ),
     }

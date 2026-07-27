@@ -654,3 +654,137 @@ def import_sales_rows(
         "sales_created": sales_created,
         "message": batch.summary,
     }
+
+
+def import_purchase_rows(
+    db: Session,
+    filename: str,
+    rows: list[dict],
+    supplier_id: Optional[int] = None,
+    notes: Optional[str] = None,
+    purchase_date: Optional[Any] = None,
+) -> dict:
+    """Post corrected OCR/manual rows as a stock-receiving purchase."""
+    from app.models.models import Purchase, PurchaseItem
+
+    def _next_po() -> str:
+        last = db.query(Purchase).order_by(Purchase.id.desc()).first()
+        if not last or not last.po_no:
+            return "PO-1001"
+        digits = "".join(ch for ch in last.po_no if ch.isdigit())
+        n = int(digits or "1000") + 1
+        return f"PO-{n}"
+
+    batch = ImportBatch(
+        filename=filename,
+        file_type=filename.rsplit(".", 1)[-1].lower() if "." in filename else "ocr",
+        status="processing",
+        rows_total=len(rows),
+    )
+    db.add(batch)
+    db.flush()
+
+    parsed_date = _parse_date(purchase_date) if purchase_date else None
+    lines: list[dict] = []
+    unmatched: list[str] = []
+    skipped = 0
+
+    for row in rows:
+        qty = _to_float(row.get("quantity"), 0)
+        if qty <= 0 or row.get("include") is False:
+            skipped += 1
+            continue
+        product = None
+        pid = row.get("matched_product_id") or row.get("product_id")
+        if pid:
+            product = db.query(Product).get(int(pid))
+        if not product:
+            product = find_product(db, row.get("sku"), row.get("product_name"))
+        if not product:
+            label = row.get("sku") or row.get("product_name") or f"row-{row.get('row_number')}"
+            unmatched.append(str(label))
+            skipped += 1
+            continue
+
+        row_date = _parse_date(row.get("purchase_date") or row.get("sale_date"))
+        if row_date and not parsed_date:
+            parsed_date = row_date
+
+        cost = row.get("unit_cost")
+        if cost in (None, ""):
+            cost = row.get("unit_price")
+        unit_cost = _to_float(cost, 0)
+        if unit_cost <= 0:
+            unit_cost = float(product.cost_price or 0)
+
+        lines.append({"product": product, "qty": qty, "unit_cost": unit_cost})
+
+    if not lines:
+        batch.status = "failed"
+        batch.summary = "No valid purchase lines — select products and quantities first"
+        batch.rows_imported = 0
+        batch.rows_skipped = skipped
+        db.commit()
+        raise ValueError(batch.summary)
+
+    po_no = _next_po()
+    purchase = Purchase(
+        po_no=po_no,
+        purchase_date=parsed_date or datetime.utcnow(),
+        supplier_id=supplier_id,
+        notes=notes or f"Imported from {filename}",
+    )
+    subtotal = 0.0
+    stock_added = 0.0
+    for line in lines:
+        product = line["product"]
+        qty = float(line["qty"])
+        unit_cost = float(line["unit_cost"])
+        line_total = qty * unit_cost
+        subtotal += line_total
+        purchase.items.append(
+            PurchaseItem(
+                product_id=product.id,
+                quantity=qty,
+                unit_cost=unit_cost,
+                line_total=line_total,
+            )
+        )
+        product.cost_price = unit_cost
+        apply_stock_change(
+            db,
+            product,
+            qty,
+            movement_type="purchase",
+            reference=po_no,
+            notes=f"Stock received from purchase OCR/import ({filename})",
+        )
+        stock_added += qty
+
+    purchase.subtotal = subtotal
+    purchase.total = subtotal
+    db.add(purchase)
+
+    batch.rows_imported = len(lines)
+    batch.rows_skipped = skipped
+    batch.stock_deducted = 0
+    batch.unmatched_skus = json.dumps(sorted(set(unmatched)))
+    batch.summary = (
+        f"Created purchase {po_no}; imported {len(lines)} lines; "
+        f"skipped {skipped}; added {stock_added} units to stock"
+    )
+    batch.status = "completed"
+    db.commit()
+    db.refresh(batch)
+
+    return {
+        "batch_id": batch.id,
+        "filename": filename,
+        "po_no": po_no,
+        "rows_imported": len(lines),
+        "rows_skipped": skipped,
+        "stock_added": stock_added,
+        "unmatched_skus": sorted(set(unmatched)),
+        "purchases_created": 1,
+        "message": batch.summary,
+    }

@@ -237,6 +237,7 @@ class OcrSuggestion(BaseModel):
     sku: str
     name: str
     sell_price: float
+    cost_price: float = 0
     stock_qty: float
     score: float = 0
 
@@ -256,16 +257,19 @@ class OcrPreviewOut(BaseModel):
     unmatched_count: int
     total_qty: float
     message: str = ""
+    mode: str = "sale"
 
 
 class SalesRowConfirm(BaseModel):
     row_number: Optional[int] = None
     invoice_no: Optional[str] = None
     sale_date: Optional[str] = None
+    purchase_date: Optional[str] = None
     sku: Optional[str] = None
     product_name: Optional[str] = None
     quantity: Optional[float] = None
     unit_price: Optional[float] = None
+    unit_cost: Optional[float] = None
     customer: Optional[str] = None
     matched_product_id: Optional[int] = None
     product_id: Optional[int] = None
@@ -276,6 +280,26 @@ class SalesRowsImportIn(BaseModel):
     filename: str = "ocr-sales"
     deduct_stock: bool = True
     rows: list[SalesRowConfirm]
+
+
+class PurchaseRowsImportIn(BaseModel):
+    filename: str = "ocr-purchase"
+    supplier_id: Optional[int] = None
+    notes: Optional[str] = None
+    purchase_date: Optional[str] = None
+    rows: list[SalesRowConfirm]
+
+
+class PurchaseImportResultOut(BaseModel):
+    batch_id: Optional[int] = None
+    filename: str
+    po_no: Optional[str] = None
+    rows_imported: int
+    rows_skipped: int
+    stock_added: float
+    unmatched_skus: list[str] = []
+    purchases_created: int
+    message: str
 
 
 class ImportResultOut(BaseModel):

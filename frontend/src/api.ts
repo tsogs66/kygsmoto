@@ -102,12 +102,29 @@ export const api = {
     fd.append('file', file)
     return request<OcrPreview>('/imports/sales/ocr-preview', { method: 'POST', body: fd })
   },
+  previewPurchasePhoto: async (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<OcrPreview>('/imports/purchases/ocr-preview', { method: 'POST', body: fd })
+  },
   confirmSalesRows: (body: {
     filename?: string
     deduct_stock?: boolean
     rows: OcrEditableRow[]
   }) =>
     request<ImportResult>('/imports/sales/confirm-rows', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  confirmPurchaseRows: (body: {
+    filename?: string
+    supplier_id?: number | null
+    notes?: string
+    purchase_date?: string | null
+    rows: OcrEditableRow[]
+  }) =>
+    request<PurchaseImportResult>('/imports/purchases/confirm-rows', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -225,6 +242,7 @@ export type Purchase = {
 export type PurchaseCreate = {
   supplier_id?: number | null
   notes?: string
+  purchase_date?: string | null
   items: { product_id: number; quantity: number; unit_cost?: number }[]
 }
 
@@ -355,6 +373,7 @@ export type OcrSuggestion = {
   sku: string
   name: string
   sell_price: number
+  cost_price?: number
   stock_qty: number
   score: number
 }
@@ -363,10 +382,12 @@ export type OcrEditableRow = {
   row_number: number
   invoice_no?: string | null
   sale_date?: string | null
+  purchase_date?: string | null
   sku?: string | null
   product_name?: string | null
   quantity?: number | null
   unit_price?: number | null
+  unit_cost?: number | null
   customer?: string | null
   matched_product_id?: number | null
   matched_product_name?: string | null
@@ -386,6 +407,19 @@ export type OcrPreview = {
   matched_count: number
   unmatched_count: number
   total_qty: number
+  message: string
+  mode?: string
+}
+
+export type PurchaseImportResult = {
+  batch_id?: number
+  filename: string
+  po_no?: string
+  rows_imported: number
+  rows_skipped: number
+  stock_added: number
+  unmatched_skus: string[]
+  purchases_created: number
   message: string
 }
 

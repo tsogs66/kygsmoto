@@ -137,6 +137,49 @@ def test_ocr_preview_endpoint(client, tmp_path):
     assert len(body["rows"]) >= 1
 
 
+def test_purchase_date_override(client):
+    products = client.get("/api/products").json()
+    product = next(p for p in products if p["sku"] == "TEST-OIL-1L")
+    r = client.post(
+        "/api/purchases",
+        json={
+            "purchase_date": "2025-02-01T08:00:00",
+            "items": [{"product_id": product["id"], "quantity": 3, "unit_cost": 400}],
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["purchase_date"].startswith("2025-02-01")
+
+
+def test_confirm_purchase_rows(client):
+    products = client.get("/api/products").json()
+    spark = next(p for p in products if p["sku"] == "TEST-SPARK-1")
+    before = spark["stock_qty"]
+    r = client.post(
+        "/api/imports/purchases/confirm-rows",
+        json={
+            "filename": "delivery.jpg",
+            "purchase_date": "2025-02-15",
+            "rows": [
+                {
+                    "row_number": 1,
+                    "matched_product_id": spark["id"],
+                    "quantity": 5,
+                    "unit_cost": 180,
+                    "include": True,
+                }
+            ],
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["purchases_created"] == 1
+    assert data["stock_added"] == 5
+    updated = client.get("/api/products").json()
+    after = next(p for p in updated if p["sku"] == "TEST-SPARK-1")["stock_qty"]
+    assert after == before + 5
+
+
 def test_preview_sales_photo_with_forced_text(client):
     db = SessionLocal()
     try:
