@@ -5,9 +5,40 @@ import type { OcrEditableRow, OcrPreview, Product, Purchase, Supplier } from '..
 import { useSortableRows } from '../hooks/useSortableRows'
 import ProductSearchSelect from '../components/ProductSearchSelect'
 
+function pad2(n: number) {
+  return String(n).padStart(2, '0')
+}
+
+/** Current local wall time for datetime-local inputs. */
 function localDateTimeValue(d = new Date()) {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+
+/**
+ * Map API naive datetime → datetime-local value without UTC shift.
+ * Server stores wall-clock times (no timezone); Date#toISOString would skew them.
+ */
+function apiDateTimeToInput(value?: string | null) {
+  if (!value) return localDateTimeValue()
+  const m = String(value).match(/(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/)
+  if (m) return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}`
+  return localDateTimeValue(new Date(value))
+}
+
+/** datetime-local → API naive datetime (keep the digits the user picked). */
+function inputDateTimeToApi(value: string) {
+  if (!value) return null
+  return value.length === 16 ? `${value}:00` : value
+}
+
+function formatApiDateTime(value?: string | null) {
+  if (!value) return '—'
+  const m = String(value).match(/(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/)
+  if (m) {
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]))
+    return d.toLocaleString()
+  }
+  return new Date(value).toLocaleString()
 }
 
 export default function PurchasesPage() {
@@ -87,11 +118,10 @@ export default function PurchasesPage() {
   )
   const { sorted, toggle, indicator } = useSortableRows(purchaseRows, 'purchase_date', 'desc')
 
-  const openEdit = (p: Purchase) => {
+  const applyEditingPurchase = (p: Purchase) => {
     setEditing(p)
     setEditSupplierId(p.supplier_id ? String(p.supplier_id) : '')
-    const d = new Date(p.purchase_date)
-    setEditDate(localDateTimeValue(d))
+    setEditDate(apiDateTimeToInput(p.purchase_date))
     setEditNotes(p.notes || '')
     setEditLines(
       (p.items || []).map((i) => ({
@@ -102,54 +132,85 @@ export default function PurchasesPage() {
         unit_cost: i.unit_cost,
       })),
     )
+  }
+
+  const openEdit = async (p: Purchase) => {
     setError('')
     setOk('')
+    applyEditingPurchase(p)
+    try {
+      const fresh = await api.getPurchase(p.id)
+      applyEditingPurchase(fresh)
+    } catch (err) {
+      // Keep list snapshot if detail fetch fails
+      setError(err instanceof Error ? err.message : 'Could not load purchase')
+    }
   }
 
   const addEditLine = () => {
     const product = products.find((p) => p.id === Number(editProductId))
-    if (!product) return
+    if (!product) return false
     const quantity = Number(editQty)
-    if (!quantity || quantity <= 0) return
+    if (!quantity || quantity <= 0) return false
     const cost = editCost ? Number(editCost) : product.cost_price
     setEditLines((prev) => [...prev, { product_id: product.id, product, quantity, unit_cost: cost }])
     setEditProductId('')
     setEditQty('1')
     setEditCost('')
+    return true
   }
 
   const saveEdit = async () => {
     if (!editing) return
-    if (!editLines.length) {
+
+    // Include product selected in the picker even if "Add item" wasn't clicked.
+    let lines = editLines
+    if (editProductId) {
+      const product = products.find((p) => p.id === Number(editProductId))
+      const quantity = Number(editQty)
+      if (product && quantity > 0) {
+        const cost = editCost ? Number(editCost) : product.cost_price
+        lines = [...lines, { product_id: product.id, product, quantity, unit_cost: cost }]
+        setEditLines(lines)
+        setEditProductId('')
+        setEditQty('1')
+        setEditCost('')
+      }
+    }
+
+    if (!lines.length) {
       setError('Purchase needs at least one item')
       return
     }
+    for (const l of lines) {
+      if (!l.quantity || l.quantity <= 0 || Number.isNaN(l.quantity)) {
+        setError('Each line needs a quantity greater than 0')
+        return
+      }
+    }
+
     setBusy(true)
     setError('')
     setOk('')
     try {
       const updated = await api.updatePurchase(editing.id, {
         supplier_id: editSupplierId ? Number(editSupplierId) : null,
-        purchase_date: editDate ? new Date(editDate).toISOString() : null,
-        notes: editNotes || undefined,
-        items: editLines.map((l) => ({
+        purchase_date: inputDateTimeToApi(editDate),
+        notes: editNotes,
+        items: lines.map((l) => ({
           id: l.id,
           product_id: l.product_id,
-          quantity: l.quantity,
-          unit_cost: l.unit_cost,
+          quantity: Number(l.quantity),
+          unit_cost: Number(l.unit_cost),
         })),
       })
       setOk(`Updated ${updated.po_no}`)
-      setEditing(updated)
-      setEditLines(
-        (updated.items || []).map((i) => ({
-          id: i.id,
-          product_id: i.product_id,
-          product: products.find((x) => x.id === i.product_id),
-          quantity: i.quantity,
-          unit_cost: i.unit_cost,
-        })),
-      )
+      applyEditingPurchase(updated)
+      setPurchases((prev) => {
+        const next = prev.map((p) => (p.id === updated.id ? updated : p))
+        if (!next.find((p) => p.id === updated.id)) next.unshift(updated)
+        return next
+      })
       load()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Update failed')
@@ -197,7 +258,7 @@ export default function PurchasesPage() {
     try {
       const po = await api.createPurchase({
         supplier_id: supplierId ? Number(supplierId) : null,
-        purchase_date: purchaseDate ? new Date(purchaseDate).toISOString() : null,
+        purchase_date: inputDateTimeToApi(purchaseDate),
         items: lines.map((l) => ({
           product_id: l.product.id,
           quantity: l.quantity,
@@ -205,7 +266,7 @@ export default function PurchasesPage() {
         })),
       })
       setOk(
-        `Purchase ${po.po_no} recorded · stock increased · ${new Date(po.purchase_date).toLocaleString()}`,
+        `Purchase ${po.po_no} recorded · stock increased · ${formatApiDateTime(po.purchase_date)}`,
       )
       setLines([])
       load()
@@ -449,7 +510,7 @@ export default function PurchasesPage() {
                   <tr key={p.id}>
                     <td>{p.po_no}</td>
                     <td>{p.supplier_label}</td>
-                    <td>{new Date(p.purchase_date).toLocaleString()}</td>
+                    <td>{formatApiDateTime(p.purchase_date)}</td>
                     <td>{peso(p.total)}</td>
                     <td>
                       {p.has_receipt ? (
