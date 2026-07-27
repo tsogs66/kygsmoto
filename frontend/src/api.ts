@@ -97,15 +97,15 @@ export const api = {
     fd.append('skip_processed', 'true')
     return request<ImportResult>('/imports/sales', { method: 'POST', body: fd })
   },
-  previewSalesPhoto: async (file: File) => {
+  previewSalesPhoto: async (file: File, signal?: AbortSignal) => {
     const fd = new FormData()
     fd.append('file', file)
-    return request<OcrPreview>('/imports/sales/ocr-preview', { method: 'POST', body: fd })
+    return request<OcrPreview>('/imports/sales/ocr-preview', { method: 'POST', body: fd, signal })
   },
-  previewPurchasePhoto: async (file: File) => {
+  previewPurchasePhoto: async (file: File, signal?: AbortSignal) => {
     const fd = new FormData()
     fd.append('file', file)
-    return request<OcrPreview>('/imports/purchases/ocr-preview', { method: 'POST', body: fd })
+    return request<OcrPreview>('/imports/purchases/ocr-preview', { method: 'POST', body: fd, signal })
   },
   confirmSalesRows: (body: {
     filename?: string

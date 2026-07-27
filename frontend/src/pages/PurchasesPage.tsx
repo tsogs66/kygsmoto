@@ -121,8 +121,10 @@ export default function PurchasesPage() {
     setError('')
     if (!f) return
     setBusy(true)
+    const ctrl = new AbortController()
+    const timer = window.setTimeout(() => ctrl.abort(), 50000)
     try {
-      const p = await api.previewPurchasePhoto(f)
+      const p = await api.previewPurchasePhoto(f, ctrl.signal)
       setOcrPreview(p)
       setOcrRows(
         p.rows.map((r) => ({
@@ -135,8 +137,25 @@ export default function PurchasesPage() {
         setOcrDate(String(p.rows.find((r) => r.sale_date)?.sale_date).slice(0, 10))
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Photo OCR failed')
+      const msg =
+        err instanceof Error && err.name === 'AbortError'
+          ? 'OCR timed out. Try a smaller JPG or enter lines manually.'
+          : err instanceof Error
+            ? err.message
+            : 'Photo OCR failed'
+      setError(msg)
+      setOcrRows(
+        Array.from({ length: 5 }, (_, i) => ({
+          row_number: i + 1,
+          quantity: 1,
+          include: true,
+          status: 'blank',
+          sale_date: ocrDate,
+          message: 'Enter manually',
+        })),
+      )
     } finally {
+      window.clearTimeout(timer)
       setBusy(false)
     }
   }

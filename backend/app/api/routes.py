@@ -544,23 +544,43 @@ async def ocr_preview_sales_photo(
     db: Session = Depends(get_db),
 ):
     """OCR a handwritten / photographed sales or purchase report into editable rows."""
+    import asyncio
     from app.core.config import settings
+    from app.services.ocr_sales import extract_text_from_image
 
     filename = file.filename or "sales-photo.jpg"
     if not re_search_image(filename, file.content_type):
-        raise HTTPException(400, "Upload a photo (jpg, png, webp, heic, bmp)")
+        raise HTTPException(400, "Upload a photo (jpg, png, webp, bmp). Convert HEIC to JPG first.")
     content = await file.read()
     if not content:
         raise HTTPException(400, "Empty image upload")
-    dest = settings.upload_dir / f"ocr_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{filename}"
-    dest.write_bytes(content)
+    if len(content) > 12 * 1024 * 1024:
+        raise HTTPException(400, "Image too large (max 12MB). Compress or take a closer photo.")
+    try:
+        dest = settings.upload_dir / f"ocr_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{filename}"
+        dest.write_bytes(content)
+    except Exception:
+        pass
+
     ocr_mode = "purchase" if mode == "purchase" else "sale"
     try:
-        return preview_sales_photo(db, filename, content, mode=ocr_mode)
-    except RuntimeError as exc:
-        raise HTTPException(500, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        # OCR image decode+tesseract off the event loop; DB matching stays here
+        ocr = await asyncio.wait_for(
+            asyncio.to_thread(extract_text_from_image, content, filename),
+            timeout=40.0,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            504,
+            "OCR timed out after 40s. Try a smaller/clearer JPG, or enter lines manually.",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        ocr = {"filename": filename, "engine": f"error:{exc.__class__.__name__}", "raw_text": "", "error": str(exc)}
+
+    try:
+        return preview_sales_photo(db, filename, content, mode=ocr_mode, ocr_result=ocr)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"OCR failed: {exc}") from exc
 
 
 @router.post("/imports/sales/confirm-rows", response_model=ImportResultOut)
@@ -584,22 +604,39 @@ async def ocr_preview_purchase_photo(
     db: Session = Depends(get_db),
 ):
     """OCR a handwritten purchase / delivery receipt into editable receive rows."""
+    import asyncio
     from app.core.config import settings
+    from app.services.ocr_sales import extract_text_from_image
 
     filename = file.filename or "purchase-photo.jpg"
     if not re_search_image(filename, file.content_type):
-        raise HTTPException(400, "Upload a photo (jpg, png, webp, heic, bmp)")
+        raise HTTPException(400, "Upload a photo (jpg, png, webp, bmp). Convert HEIC to JPG first.")
     content = await file.read()
     if not content:
         raise HTTPException(400, "Empty image upload")
-    dest = settings.upload_dir / f"ocr_po_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{filename}"
-    dest.write_bytes(content)
+    if len(content) > 12 * 1024 * 1024:
+        raise HTTPException(400, "Image too large (max 12MB). Compress or take a closer photo.")
     try:
-        return preview_sales_photo(db, filename, content, mode="purchase")
-    except RuntimeError as exc:
-        raise HTTPException(500, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        dest = settings.upload_dir / f"ocr_po_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{filename}"
+        dest.write_bytes(content)
+    except Exception:
+        pass
+    try:
+        ocr = await asyncio.wait_for(
+            asyncio.to_thread(extract_text_from_image, content, filename),
+            timeout=40.0,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            504,
+            "OCR timed out after 40s. Try a smaller/clearer JPG, or enter lines manually.",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        ocr = {"filename": filename, "engine": f"error:{exc.__class__.__name__}", "raw_text": "", "error": str(exc)}
+    try:
+        return preview_sales_photo(db, filename, content, mode="purchase", ocr_result=ocr)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"OCR failed: {exc}") from exc
 
 
 @router.post("/imports/purchases/confirm-rows", response_model=PurchaseImportResultOut)

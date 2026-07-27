@@ -37,6 +37,8 @@ export default function ImportPage() {
   const [products, setProducts] = useState<Product[]>([])
   const [showRaw, setShowRaw] = useState(false)
 
+  const [ocrStatus, setOcrStatus] = useState('')
+
   const loadHistory = () => api.imports().then(setHistory).catch((e) => setError(e.message))
 
   useEffect(() => {
@@ -81,10 +83,14 @@ export default function ImportPage() {
     setOcrRows([])
     setResult(null)
     setError('')
+    setOcrStatus('')
     if (!f) return
     setBusy(true)
+    setOcrStatus('Reading photo…')
+    const ctrl = new AbortController()
+    const timer = window.setTimeout(() => ctrl.abort(), 50000)
     try {
-      const p = await api.previewSalesPhoto(f)
+      const p = await api.previewSalesPhoto(f, ctrl.signal)
       setOcrPreview(p)
       setOcrRows(
         p.rows.map((r) => ({
@@ -93,9 +99,29 @@ export default function ImportPage() {
           sale_date: r.sale_date ? String(r.sale_date).slice(0, 10) : '',
         })),
       )
+      setOcrStatus(p.message || 'Done')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Photo OCR failed')
+      const msg =
+        err instanceof Error && err.name === 'AbortError'
+          ? 'OCR timed out. Try a smaller JPG or enter lines manually.'
+          : err instanceof Error
+            ? err.message
+            : 'Photo OCR failed'
+      setError(msg)
+      // Still show blank editable rows so user is not stuck
+      setOcrRows(
+        Array.from({ length: 5 }, (_, i) => ({
+          row_number: i + 1,
+          quantity: 1,
+          include: true,
+          status: 'blank',
+          sale_date: '',
+          message: 'Enter manually',
+        })),
+      )
+      setOcrStatus('')
     } finally {
+      window.clearTimeout(timer)
       setBusy(false)
     }
   }
@@ -330,9 +356,15 @@ export default function ImportPage() {
             Fill missing dates
           </button>
           <button className="btn" disabled={busy || runnableOcrCount === 0} onClick={runOcrConfirm}>
-            {busy ? 'Working…' : `Confirm ${runnableOcrCount} line(s)`}
+            {busy ? ocrStatus || 'Working…' : `Confirm ${runnableOcrCount} line(s)`}
           </button>
         </div>
+        {busy && (
+          <p className="muted" style={{ marginTop: '0.5rem' }}>
+            {ocrStatus || 'Working…'} This usually finishes in a few seconds. If it stalls, wait for timeout or
+            refresh and try a smaller JPG.
+          </p>
+        )}
         {ocrRows.length > 0 && (
           <p className="muted" style={{ marginTop: '0.4rem' }}>
             Each line has its own sale date — multi-day sheets create separate sales per day.

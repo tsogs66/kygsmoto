@@ -17,58 +17,59 @@ from app.services.import_sales import find_product
 def extract_text_from_image(content: bytes, filename: str = "photo.jpg") -> dict[str, Any]:
     """Run OCR on an image. Returns text + engine metadata.
 
-    Uses Tesseract when available. Tries several preprocess + PSM modes and
-    keeps the richest reading. Handwriting still needs review in the UI.
+    Fast path: one downscaled grayscale pass. Avoids multi-pass hangs on
+    large phone photos. Handwriting still needs review in the UI.
     """
     try:
         from PIL import Image, ImageOps, ImageFilter, ImageEnhance
     except ImportError as exc:
         raise RuntimeError("Pillow is required for photo OCR. Install pillow.") from exc
 
-    image = Image.open(io.BytesIO(content))
+    try:
+        image = Image.open(io.BytesIO(content))
+        image.load()  # force decode now (fail fast on corrupt/HEIC without plugin)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "filename": filename,
+            "engine": f"image-open-failed:{exc.__class__.__name__}",
+            "raw_text": "",
+            "image_width": 0,
+            "image_height": 0,
+            "error": str(exc),
+        }
+
     if image.mode not in ("RGB", "L"):
         image = image.convert("RGB")
-    w, h = image.size
-    if max(w, h) < 1800:
-        scale = 1800 / max(w, h)
-        image = image.resize((int(w * scale), int(h * scale)))
 
-    variants: list[Image.Image] = []
+    # Cap size — phone photos (12MP+) make Tesseract appear stuck
+    max_side = 1600
+    w, h = image.size
+    longest = max(w, h)
+    if longest > max_side:
+        scale = max_side / longest
+        image = image.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+    elif longest < 900:
+        scale = 900 / longest
+        image = image.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+
     gray = ImageOps.grayscale(image)
     gray = ImageOps.autocontrast(gray)
-    variants.append(gray.filter(ImageFilter.SHARPEN))
-    variants.append(ImageEnhance.Contrast(gray).enhance(1.8).filter(ImageFilter.SHARPEN))
-    # Binary-ish threshold for faded ink
-    variants.append(gray.point(lambda x: 255 if x > 160 else 0))
+    gray = ImageEnhance.Contrast(gray).enhance(1.5)
+    gray = gray.filter(ImageFilter.SHARPEN)
 
     engine = "none"
     text = ""
     try:
         import pytesseract
 
-        configs = [
-            "--oem 3 --psm 6",   # assume uniform block of text
-            "--oem 3 --psm 4",   # single column
-            "--oem 3 --psm 11",  # sparse text
-        ]
-        candidates: list[str] = []
-        for img in variants:
-            for cfg in configs:
-                try:
-                    t = pytesseract.image_to_string(img, config=cfg) or ""
-                    if t.strip():
-                        candidates.append(t.strip())
-                except Exception:
-                    continue
-        if candidates:
-            # Prefer the reading with most alphanumeric content / lines
-            text = max(
-                candidates,
-                key=lambda t: (len(re.findall(r"[A-Za-z0-9]{2,}", t)), t.count("\n"), len(t)),
-            )
-            engine = f"tesseract/{len(candidates)}-passes"
+        # Single fast pass (psm 6). Extra passes caused long "Working…" hangs.
+        text = pytesseract.image_to_string(gray, config="--oem 3 --psm 6") or ""
+        if not text.strip():
+            # One fallback only if empty
+            text = pytesseract.image_to_string(gray, config="--oem 3 --psm 4") or ""
+            engine = "tesseract/psm4" if text.strip() else "tesseract-empty"
         else:
-            engine = "tesseract-empty"
+            engine = "tesseract/psm6"
     except Exception as exc:  # noqa: BLE001
         text = ""
         engine = f"unavailable:{exc.__class__.__name__}"
@@ -344,8 +345,27 @@ def _score_product(product: Product, query: str) -> float:
 
 def suggest_products(db: Session, query: str, limit: int = 12) -> list[dict]:
     products = db.query(Product).filter(Product.is_active.is_(True)).all()
-    scored = []
+    return _rank_products(products, query, limit=limit)
+
+
+def _rank_products(products: list[Product], query: str, limit: int = 12) -> list[dict]:
+    q = _normalize_ocr(query)
+    if not q:
+        return []
+    # Cheap prefilter: require any token overlap / substring before fuzzy
+    q_tokens = [t for t in _token_set(q) if len(t) >= 2]
+    shortlist: list[Product] = []
     for p in products:
+        hay = f"{p.sku} {p.name} {p.brand or ''}".lower()
+        if any(t in hay for t in q_tokens) or (p.sku and p.sku.lower() in q) or (q[:4] in hay):
+            shortlist.append(p)
+        elif len(shortlist) < 80 and SequenceMatcher(None, (p.name or "").lower()[:40], q[:40]).ratio() > 0.4:
+            shortlist.append(p)
+    if not shortlist:
+        shortlist = products[:200]  # fallback sample if tokens useless
+
+    scored = []
+    for p in shortlist:
         score = _score_product(p, query)
         if score >= 20:
             scored.append((score, p))
@@ -365,48 +385,56 @@ def suggest_products(db: Session, query: str, limit: int = 12) -> list[dict]:
 
 
 def _match_sku_in_text(products: list[Product], text: str) -> Optional[Product]:
-    """Find inventory SKU mentioned inside free OCR text."""
+    """Find inventory SKU mentioned inside free OCR text (fast exact/substring first)."""
     if not text:
         return None
     hay = _sku_normalize(text)
-    # Longest SKU first to avoid short false hits
-    ranked = sorted(products, key=lambda p: len(p.sku or ""), reverse=True)
+    # Exact / substring — O(n), no fuzzy loops
+    ranked = sorted(
+        (p for p in products if p.sku and len(p.sku) >= 3),
+        key=lambda p: len(p.sku or ""),
+        reverse=True,
+    )
     for p in ranked:
         sku_n = _sku_normalize(p.sku or "")
-        if len(sku_n) < 3:
-            continue
-        if sku_n in hay:
+        if sku_n and sku_n in hay:
             return p
-        # Fuzzy window: any contiguous chunk similar to SKU
-        for m in re.finditer(r"[A-Z0-9\-/]{3,}", hay):
-            chunk = m.group(0)
-            if SequenceMatcher(None, sku_n, chunk).ratio() >= 0.86:
-                return p
-    return None
+    # Limited fuzzy only on OCR code-like tokens
+    chunks = re.findall(r"[A-Z0-9\-/]{3,}", hay)
+    if not chunks:
+        return None
+    best: tuple[float, Optional[Product]] = (0.0, None)
+    for p in ranked[:400]:
+        sku_n = _sku_normalize(p.sku or "")
+        for chunk in chunks:
+            ratio = SequenceMatcher(None, sku_n, chunk).ratio()
+            if ratio > best[0]:
+                best = (ratio, p)
+    return best[1] if best[0] >= 0.86 else None
 
 
 def match_ocr_rows(db: Session, rows: list[dict], mode: str = "sale") -> list[dict]:
     products = db.query(Product).filter(Product.is_active.is_(True)).all()
+    by_id = {p.id: p for p in products}
     enriched = []
     for row in rows:
         sku = row.get("sku")
         name = row.get("product_name")
         ocr_text = row.get("ocr_text") or ""
         qty = float(row.get("quantity") or 0)
-        query = f"{sku or ''} {name or ''} {ocr_text}".strip()
+        # Prefer shorter query for ranking (avoid scoring twice on duplicate text)
+        query = f"{sku or ''} {name or ''}".strip() or ocr_text
 
         product = find_product(db, sku, name)
         if not product:
-            product = _match_sku_in_text(products, query)
+            product = _match_sku_in_text(products, f"{sku or ''} {ocr_text} {name or ''}")
 
-        suggestions = suggest_products(db, query, limit=12) if query else []
+        suggestions = _rank_products(products, query, limit=12) if query else []
         if not product and suggestions:
             top = suggestions[0]
-            # Auto-accept stronger inventory matches (incl. fuzzy OCR)
             if top["score"] >= 58:
-                product = next((p for p in products if p.id == top["id"]), None)
+                product = by_id.get(top["id"])
 
-        # Always attach suggestions (include matched product at top)
         if product:
             suggestions = [
                 {
@@ -443,7 +471,6 @@ def match_ocr_rows(db: Session, rows: list[dict], mode: str = "sale") -> list[di
         enriched.append(entry)
 
     next_no = (enriched[-1]["row_number"] + 1) if enriched else 1
-    # Carry last known date into blank helper rows
     last_date = None
     for r in reversed(enriched):
         if r.get("sale_date"):
@@ -471,9 +498,24 @@ def match_ocr_rows(db: Session, rows: list[dict], mode: str = "sale") -> list[di
     return enriched
 
 
-def preview_sales_photo(db: Session, filename: str, content: bytes, mode: str = "sale") -> dict:
-    ocr = extract_text_from_image(content, filename)
-    parsed = parse_ocr_lines(ocr["raw_text"]) if ocr["raw_text"] else []
+def preview_sales_photo(
+    db: Session,
+    filename: str,
+    content: bytes,
+    mode: str = "sale",
+    ocr_result: Optional[dict] = None,
+) -> dict:
+    try:
+        ocr = ocr_result if ocr_result is not None else extract_text_from_image(content, filename)
+    except Exception as exc:  # noqa: BLE001 — never hang the UI on OCR crash
+        ocr = {
+            "filename": filename,
+            "engine": f"error:{exc.__class__.__name__}",
+            "raw_text": "",
+            "error": str(exc),
+        }
+
+    parsed = parse_ocr_lines(ocr.get("raw_text") or "") if ocr.get("raw_text") else []
     if not parsed:
         parsed = [
             {
@@ -491,25 +533,49 @@ def preview_sales_photo(db: Session, filename: str, content: bytes, mode: str = 
             }
             for i in range(1, 6)
         ]
-    rows = match_ocr_rows(db, parsed, mode=mode)
-    matched = sum(1 for r in rows if r["status"] == "matched")
-    unmatched = sum(1 for r in rows if r["status"] == "unmatched")
-    total_qty = sum(float(r.get("quantity") or 0) for r in rows if r["status"] == "matched")
+    try:
+        rows = match_ocr_rows(db, parsed, mode=mode)
+    except Exception as exc:  # noqa: BLE001
+        rows = [
+            {
+                **r,
+                "matched_product_id": None,
+                "matched_product_name": None,
+                "current_stock": None,
+                "suggestions": [],
+                "status": "unmatched",
+                "message": f"Match skipped: {exc}",
+            }
+            for r in parsed
+        ]
+
+    matched = sum(1 for r in rows if r.get("status") == "matched")
+    unmatched = sum(1 for r in rows if r.get("status") == "unmatched")
+    total_qty = sum(float(r.get("quantity") or 0) for r in rows if r.get("status") == "matched")
     dates = sorted({r.get("sale_date") for r in rows if r.get("sale_date")})
     kind = "purchase receive" if mode == "purchase" else "sales import"
     date_note = f" Dates found: {', '.join(dates)}." if dates else ""
+    err = ocr.get("error")
+    if err:
+        msg = f"Could not read image ({err}). Enter lines manually for {kind}."
+    elif ocr.get("raw_text"):
+        msg = (
+            f"Review OCR rows (each line keeps its own date), select inventory items, "
+            f"then confirm {kind}.{date_note}"
+        )
+    else:
+        msg = (
+            f"OCR returned no text ({ocr.get('engine')}). "
+            f"Enter lines manually for {kind}, or try a clearer / well-lit photo."
+        )
     return {
         "filename": filename,
-        "engine": ocr["engine"],
-        "raw_text": ocr["raw_text"],
+        "engine": ocr.get("engine") or "none",
+        "raw_text": ocr.get("raw_text") or "",
         "rows": rows,
         "matched_count": matched,
         "unmatched_count": unmatched,
         "total_qty": total_qty,
         "mode": mode,
-        "message": (
-            f"Review OCR rows (each line keeps its own date), select inventory items, then confirm {kind}.{date_note}"
-            if ocr["raw_text"]
-            else f"OCR could not read the photo clearly. Enter lines manually for {kind}."
-        ),
+        "message": msg,
     }
