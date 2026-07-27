@@ -97,6 +97,23 @@ export const api = {
     fd.append('skip_processed', 'true')
     return request<ImportResult>('/imports/sales', { method: 'POST', body: fd })
   },
+  previewSalesPhoto: async (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<OcrPreview>('/imports/sales/ocr-preview', { method: 'POST', body: fd })
+  },
+  confirmSalesRows: (body: {
+    filename?: string
+    deduct_stock?: boolean
+    rows: OcrEditableRow[]
+  }) =>
+    request<ImportResult>('/imports/sales/confirm-rows', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  productSuggestions: (q: string) =>
+    request<OcrSuggestion[]>(`/imports/product-suggestions?q=${encodeURIComponent(q)}`),
   imports: () => request<ImportBatch[]>('/imports'),
   importWorkbook: async (file: File, replaceExisting = true) => {
     const fd = new FormData()
@@ -185,6 +202,7 @@ export type SaleCreate = {
   customer_id?: number | null
   payment_method: string
   discount?: number
+  sale_date?: string | null
   items: { product_id: number; quantity: number; unit_price?: number }[]
 }
 
@@ -316,11 +334,13 @@ export type ImportPreview = {
   rows: {
     row_number: number
     invoice_no?: string
+    sale_date?: string
     sku?: string
     product_name?: string
     quantity?: number
     unit_price?: number
     matched_product_name?: string
+    matched_product_id?: number
     current_stock?: number
     status: string
     message?: string
@@ -328,6 +348,45 @@ export type ImportPreview = {
   matched_count: number
   unmatched_count: number
   total_qty: number
+}
+
+export type OcrSuggestion = {
+  id: number
+  sku: string
+  name: string
+  sell_price: number
+  stock_qty: number
+  score: number
+}
+
+export type OcrEditableRow = {
+  row_number: number
+  invoice_no?: string | null
+  sale_date?: string | null
+  sku?: string | null
+  product_name?: string | null
+  quantity?: number | null
+  unit_price?: number | null
+  customer?: string | null
+  matched_product_id?: number | null
+  matched_product_name?: string | null
+  current_stock?: number | null
+  ocr_text?: string | null
+  suggestions?: OcrSuggestion[]
+  status?: string
+  message?: string | null
+  include?: boolean
+}
+
+export type OcrPreview = {
+  filename: string
+  engine: string
+  raw_text: string
+  rows: OcrEditableRow[]
+  matched_count: number
+  unmatched_count: number
+  total_qty: number
+  message: string
 }
 
 export type ImportResult = {

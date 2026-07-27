@@ -232,6 +232,52 @@ class ImportPreviewOut(BaseModel):
     total_qty: float
 
 
+class OcrSuggestion(BaseModel):
+    id: int
+    sku: str
+    name: str
+    sell_price: float
+    stock_qty: float
+    score: float = 0
+
+
+class OcrPreviewRow(ImportPreviewRow):
+    ocr_text: Optional[str] = None
+    suggestions: list[OcrSuggestion] = []
+    include: bool = True
+
+
+class OcrPreviewOut(BaseModel):
+    filename: str
+    engine: str = "none"
+    raw_text: str = ""
+    rows: list[OcrPreviewRow]
+    matched_count: int
+    unmatched_count: int
+    total_qty: float
+    message: str = ""
+
+
+class SalesRowConfirm(BaseModel):
+    row_number: Optional[int] = None
+    invoice_no: Optional[str] = None
+    sale_date: Optional[str] = None
+    sku: Optional[str] = None
+    product_name: Optional[str] = None
+    quantity: Optional[float] = None
+    unit_price: Optional[float] = None
+    customer: Optional[str] = None
+    matched_product_id: Optional[int] = None
+    product_id: Optional[int] = None
+    include: bool = True
+
+
+class SalesRowsImportIn(BaseModel):
+    filename: str = "ocr-sales"
+    deduct_stock: bool = True
+    rows: list[SalesRowConfirm]
+
+
 class ImportResultOut(BaseModel):
     batch_id: int
     filename: str

@@ -24,6 +24,11 @@ export default function SalesPage() {
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [error, setError] = useState('')
   const [ok, setOk] = useState('')
+  const [saleDate, setSaleDate] = useState(() => {
+    const d = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  })
 
   const load = () => {
     const params = new URLSearchParams()
@@ -105,13 +110,14 @@ export default function SalesPage() {
       const sale = await api.createSale({
         customer_id: customerId ? Number(customerId) : null,
         payment_method: payment,
+        sale_date: saleDate ? new Date(saleDate).toISOString() : null,
         items: cart.map((l) => ({
           product_id: l.product.id,
           quantity: l.quantity,
           unit_price: l.product.sell_price,
         })),
       })
-      setOk(`Sale ${sale.invoice_no} saved · ${peso(sale.total)}`)
+      setOk(`Sale ${sale.invoice_no} saved · ${peso(sale.total)} · ${new Date(sale.sale_date).toLocaleString()}`)
       setCart([])
       load()
     } catch (err) {
@@ -124,7 +130,7 @@ export default function SalesPage() {
       <div className="page-header">
         <div>
           <h1>Sales / POS</h1>
-          <p>Search items, ring up sales, and review history by week / month / year.</p>
+          <p>Search items, ring up or backdate sales, and review history by week / month / year.</p>
         </div>
       </div>
 
@@ -154,6 +160,17 @@ export default function SalesPage() {
                 <option value="gcash">GCash</option>
                 <option value="card">Card</option>
               </select>
+            </label>
+            <label className="full">
+              Sale date / time
+              <input
+                type="datetime-local"
+                value={saleDate}
+                onChange={(e) => setSaleDate(e.target.value)}
+              />
+              <span className="muted" style={{ fontSize: '0.78rem' }}>
+                Change this to enter older sales into the existing system.
+              </span>
             </label>
             <label className="full">
               Search item

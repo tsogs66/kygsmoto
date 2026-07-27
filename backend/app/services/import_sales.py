@@ -487,3 +487,170 @@ def import_sales_file(
         "sales_created": sales_created,
         "message": batch.summary,
     }
+
+
+def import_sales_rows(
+    db: Session,
+    filename: str,
+    rows: list[dict],
+    deduct_stock: bool = True,
+) -> dict:
+    """Import corrected/previewed sales rows (CSV confirm or OCR review).
+
+    Each row may include ``matched_product_id`` (preferred), or sku/product_name.
+    Blank / zero-qty rows are skipped.
+    """
+    batch = ImportBatch(
+        filename=filename,
+        file_type=filename.rsplit(".", 1)[-1].lower() if "." in filename else "ocr",
+        status="processing",
+        rows_total=len(rows),
+    )
+    db.add(batch)
+    db.flush()
+
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    unmatched: list[str] = []
+    skipped = 0
+    imported_rows = 0
+    stock_deducted = 0.0
+
+    for row in rows:
+        qty = _to_float(row.get("quantity"), 0)
+        if qty <= 0:
+            skipped += 1
+            continue
+        if row.get("include") is False:
+            skipped += 1
+            continue
+
+        product = None
+        pid = row.get("matched_product_id") or row.get("product_id")
+        if pid:
+            product = db.query(Product).get(int(pid))
+        if not product:
+            product = find_product(db, row.get("sku"), row.get("product_name"))
+        if not product:
+            label = row.get("sku") or row.get("product_name") or f"row-{row.get('row_number')}"
+            unmatched.append(str(label))
+            skipped += 1
+            continue
+
+        sale_date = _parse_date(row.get("sale_date")) or datetime.utcnow()
+        invoice_no = row.get("invoice_no")
+        if invoice_no:
+            invoice_no = str(invoice_no).strip()
+            if invoice_no in ("", "nan", "None"):
+                invoice_no = None
+        if invoice_no:
+            key = invoice_no
+        else:
+            day = sale_date.strftime("%Y-%m-%d")
+            key = f"OCR-{day.replace('-', '')}"
+
+        unit_price = row.get("unit_price")
+        unit_price = _to_float(unit_price, 0) if unit_price not in (None, "") else product.sell_price
+        if unit_price <= 0:
+            unit_price = product.sell_price
+
+        grouped[key].append({
+            "product": product,
+            "qty": qty,
+            "unit_price": unit_price,
+            "sale_date": sale_date,
+            "customer_name": row.get("customer"),
+            "invoice_no": invoice_no,
+        })
+        imported_rows += 1
+
+    sales_created = 0
+    for invoice_key, lines in grouped.items():
+        existing = db.query(Sale).filter(Sale.invoice_no == invoice_key).first()
+        if existing:
+            invoice_key = f"{invoice_key}-IMP{batch.id}-{sales_created + 1}"
+
+        customer_id = None
+        customer_name = lines[0].get("customer_name")
+        if customer_name and str(customer_name).strip() not in ("", "nan", "None"):
+            customer = db.query(Customer).filter(Customer.name.ilike(str(customer_name).strip())).first()
+            if not customer:
+                customer = Customer(name=str(customer_name).strip())
+                db.add(customer)
+                db.flush()
+            customer_id = customer.id
+
+        sale = Sale(
+            invoice_no=invoice_key,
+            sale_date=lines[0]["sale_date"],
+            customer_id=customer_id,
+            payment_method="cash",
+            payment_status="paid",
+            source="import",
+            import_batch_id=batch.id,
+            notes=f"Imported from {filename}",
+        )
+        subtotal = 0.0
+        for line in lines:
+            product: Product = line["product"]
+            qty = float(line["qty"])
+            unit_price = float(line["unit_price"])
+            line_total = qty * unit_price
+            subtotal += line_total
+            sale.items.append(
+                SaleItem(
+                    product_id=product.id,
+                    sku=product.sku,
+                    product_name=product.name,
+                    quantity=qty,
+                    unit_price=unit_price,
+                    cost_price=product.cost_price,
+                    line_total=line_total,
+                )
+            )
+            if deduct_stock and not str(product.sku).upper().startswith("LABOR"):
+                apply_stock_change(
+                    db,
+                    product,
+                    -qty,
+                    movement_type="import",
+                    reference=invoice_key,
+                    notes=f"Stock deducted from sales import ({filename})",
+                )
+                stock_deducted += qty
+        sale.subtotal = subtotal
+        sale.total = subtotal
+        sale.amount_paid = subtotal
+        db.add(sale)
+        sales_created += 1
+
+    if imported_rows == 0 and sales_created == 0:
+        batch.status = "failed"
+        batch.summary = "No valid rows to import — select products and quantities first"
+        batch.rows_imported = 0
+        batch.rows_skipped = skipped
+        db.commit()
+        raise ValueError(batch.summary)
+
+    batch.rows_imported = imported_rows
+    batch.rows_skipped = skipped
+    batch.stock_deducted = stock_deducted
+    batch.unmatched_skus = json.dumps(sorted(set(unmatched)))
+    batch.summary = (
+        f"Created {sales_created} sales; imported {imported_rows} lines; "
+        f"skipped {skipped}; deducted {stock_deducted} units from stock"
+    )
+    batch.status = "completed"
+    db.commit()
+    db.refresh(batch)
+
+    return {
+        "batch_id": batch.id,
+        "filename": filename,
+        "rows_total": batch.rows_total,
+        "rows_imported": batch.rows_imported,
+        "rows_skipped": batch.rows_skipped,
+        "stock_deducted": batch.stock_deducted,
+        "unmatched_skus": sorted(set(unmatched)),
+        "sales_created": sales_created,
+        "message": batch.summary,
+    }

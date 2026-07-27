@@ -26,6 +26,7 @@ from app.schemas import (
     ImportPreviewOut,
     ImportResultOut,
     InventoryReportOut,
+    OcrPreviewOut,
     PeriodReportOut,
     ProductCreate,
     ProductOut,
@@ -34,6 +35,7 @@ from app.schemas import (
     PurchaseOut,
     SaleCreate,
     SaleOut,
+    SalesRowsImportIn,
     StockAdjust,
     SupplierCreate,
     SupplierOut,
@@ -43,9 +45,10 @@ from app.schemas import (
     ProductPerformanceOut,
 )
 from app.services import reports as report_service
-from app.services.import_sales import import_sales_file, preview_sales_file
+from app.services.import_sales import import_sales_file, import_sales_rows, preview_sales_file
 from app.services.import_stock import import_stock_file, preview_stock_file
 from app.services.kygs_import import import_kygs_workbook
+from app.services.ocr_sales import preview_sales_photo, suggest_products
 from app.services.seed import purge_hardcoded_demo
 from app.services.stock import apply_stock_change, stock_status
 from pathlib import Path
@@ -530,6 +533,59 @@ async def run_import(
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/imports/sales/ocr-preview", response_model=OcrPreviewOut)
+async def ocr_preview_sales_photo(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """OCR a handwritten / photographed sales report into editable preview rows."""
+    from app.core.config import settings
+
+    filename = file.filename or "sales-photo.jpg"
+    if not re_search_image(filename, file.content_type):
+        raise HTTPException(400, "Upload a photo (jpg, png, webp, heic, bmp)")
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "Empty image upload")
+    dest = settings.upload_dir / f"ocr_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{filename}"
+    dest.write_bytes(content)
+    try:
+        return preview_sales_photo(db, filename, content)
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/imports/sales/confirm-rows", response_model=ImportResultOut)
+def confirm_sales_rows(payload: SalesRowsImportIn, db: Session = Depends(get_db)):
+    """Confirm corrected OCR / preview rows into sales (with optional stock deduct)."""
+    rows = [r.model_dump() for r in payload.rows]
+    try:
+        return import_sales_rows(
+            db,
+            payload.filename or "ocr-sales",
+            rows,
+            deduct_stock=payload.deduct_stock,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/imports/product-suggestions")
+def product_suggestions(q: str = Query(..., min_length=1), db: Session = Depends(get_db)):
+    return suggest_products(db, q, limit=12)
+
+
+def re_search_image(filename: str, content_type: Optional[str]) -> bool:
+    name = (filename or "").lower()
+    if any(name.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic")):
+        return True
+    if content_type and content_type.startswith("image/"):
+        return True
+    return False
 
 
 @router.get("/imports", response_model=list[ImportBatchOut])

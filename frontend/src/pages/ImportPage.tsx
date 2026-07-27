@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react'
-import { api } from '../api'
+import { useEffect, useMemo, useState } from 'react'
+import { api, peso } from '../api'
 import type {
   ImportBatch,
   ImportPreview,
   ImportResult,
+  OcrEditableRow,
+  OcrPreview,
+  Product,
   StockImportResult,
   StockPreview,
   WorkbookImportResult,
@@ -26,11 +29,25 @@ export default function ImportPage() {
   const [error, setError] = useState('')
   const [deductStock, setDeductStock] = useState(true)
 
+  const [photoFile, setPhotoFile] = useState<File | null>(null)
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null)
+  const [ocrPreview, setOcrPreview] = useState<OcrPreview | null>(null)
+  const [ocrRows, setOcrRows] = useState<OcrEditableRow[]>([])
+  const [products, setProducts] = useState<Product[]>([])
+  const [showRaw, setShowRaw] = useState(false)
+
   const loadHistory = () => api.imports().then(setHistory).catch((e) => setError(e.message))
 
   useEffect(() => {
     loadHistory()
+    api.products().then(setProducts).catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    return () => {
+      if (photoUrl) URL.revokeObjectURL(photoUrl)
+    }
+  }, [photoUrl])
 
   const isWorkbook = (f: File) => /\.xlsm?$/i.test(f.name) || /\.xls$/i.test(f.name)
 
@@ -55,6 +72,33 @@ export default function ImportPage() {
     }
   }
 
+  const onPhoto = async (f: File | null) => {
+    if (photoUrl) URL.revokeObjectURL(photoUrl)
+    setPhotoFile(f)
+    setPhotoUrl(f ? URL.createObjectURL(f) : null)
+    setOcrPreview(null)
+    setOcrRows([])
+    setResult(null)
+    setError('')
+    if (!f) return
+    setBusy(true)
+    try {
+      const p = await api.previewSalesPhoto(f)
+      setOcrPreview(p)
+      setOcrRows(
+        p.rows.map((r) => ({
+          ...r,
+          include: r.status !== 'blank',
+          sale_date: r.sale_date ? String(r.sale_date).slice(0, 10) : '',
+        })),
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Photo OCR failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const onStockFile = async (f: File | null, mode: StockMode = stockMode) => {
     setStockFile(f)
     setStockPreview(null)
@@ -67,6 +111,70 @@ export default function ImportPage() {
       setStockPreview(p)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Stock preview failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const updateOcrRow = (idx: number, patch: Partial<OcrEditableRow>) => {
+    setOcrRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
+  }
+
+  const selectProduct = (idx: number, productId: number) => {
+    const product = products.find((p) => p.id === productId)
+    if (!product) return
+    updateOcrRow(idx, {
+      matched_product_id: product.id,
+      matched_product_name: product.name,
+      sku: product.sku,
+      product_name: product.name,
+      unit_price: ocrRows[idx].unit_price || product.sell_price,
+      current_stock: product.stock_qty,
+      status: 'matched',
+      message: `Selected ${product.sku}`,
+      include: true,
+    })
+  }
+
+  const addBlankOcrRow = () => {
+    setOcrRows((prev) => [
+      ...prev,
+      {
+        row_number: (prev[prev.length - 1]?.row_number || 0) + 1,
+        quantity: 1,
+        include: true,
+        status: 'blank',
+        sale_date: prev.find((r) => r.sale_date)?.sale_date || '',
+        message: 'Manual line',
+      },
+    ])
+  }
+
+  const runnableOcrCount = useMemo(
+    () =>
+      ocrRows.filter(
+        (r) => r.include !== false && r.matched_product_id && Number(r.quantity) > 0,
+      ).length,
+    [ocrRows],
+  )
+
+  const runOcrConfirm = async () => {
+    if (!ocrPreview) return
+    setBusy(true)
+    setError('')
+    try {
+      const r = await api.confirmSalesRows({
+        filename: photoFile?.name || ocrPreview.filename,
+        deduct_stock: deductStock,
+        rows: ocrRows.map((row) => ({
+          ...row,
+          include: row.include !== false && !!row.matched_product_id && Number(row.quantity) > 0,
+        })),
+      })
+      setResult(r)
+      loadHistory()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Confirm failed')
     } finally {
       setBusy(false)
     }
@@ -139,8 +247,7 @@ export default function ImportPage() {
         <div>
           <h1>Import / Stock Upload</h1>
           <p>
-            Upload sales reports, stock CSVs, or the full KYGS workbook. Extracted samples live in{' '}
-            <code>samples/kygs_current_inventory.csv</code> and <code>samples/kygs_sales_export.csv</code>.
+            Upload sales reports, handwritten photo scans, stock CSVs, or the full KYGS workbook.
           </p>
         </div>
       </div>
@@ -169,12 +276,177 @@ export default function ImportPage() {
       )}
 
       <div className="panel" style={{ marginBottom: '1rem' }}>
+        <h2>Scan handwritten sales report (photo)</h2>
+        <p className="muted">
+          Take or upload a photo of a handwritten sales sheet. The app reads lines with OCR, then you correct
+          qty/price/date and select the matching inventory item before saving.
+        </p>
+        <div className="toolbar">
+          <input
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={(e) => onPhoto(e.target.files?.[0] || null)}
+          />
+          <label style={{ display: 'inline-flex', gap: '0.45rem', alignItems: 'center' }}>
+            <input type="checkbox" checked={deductStock} onChange={(e) => setDeductStock(e.target.checked)} />
+            Deduct stock on confirm
+          </label>
+          <button className="btn secondary" type="button" onClick={addBlankOcrRow} disabled={!ocrRows.length && !ocrPreview}>
+            Add blank line
+          </button>
+          <button className="btn" disabled={busy || runnableOcrCount === 0} onClick={runOcrConfirm}>
+            {busy ? 'Working…' : `Confirm ${runnableOcrCount} line(s)`}
+          </button>
+        </div>
+
+        {(photoUrl || ocrPreview) && (
+          <div className="grid grid-2" style={{ marginTop: '1rem' }}>
+            <div>
+              {photoUrl && (
+                <img
+                  src={photoUrl}
+                  alt="Sales report scan"
+                  style={{ width: '100%', maxHeight: 420, objectFit: 'contain', borderRadius: 8, background: '#111' }}
+                />
+              )}
+              {ocrPreview && (
+                <p className="muted" style={{ marginTop: '0.6rem' }}>
+                  Engine: {ocrPreview.engine} · {ocrPreview.message}
+                  {ocrPreview.raw_text ? (
+                    <>
+                      {' '}
+                      <button type="button" className="btn secondary" style={{ marginLeft: 8 }} onClick={() => setShowRaw((v) => !v)}>
+                        {showRaw ? 'Hide OCR text' : 'Show OCR text'}
+                      </button>
+                    </>
+                  ) : null}
+                </p>
+              )}
+              {showRaw && ocrPreview?.raw_text && (
+                <pre
+                  style={{
+                    whiteSpace: 'pre-wrap',
+                    fontSize: '0.8rem',
+                    background: '#f4f1ea',
+                    padding: '0.75rem',
+                    borderRadius: 8,
+                    maxHeight: 200,
+                    overflow: 'auto',
+                  }}
+                >
+                  {ocrPreview.raw_text}
+                </pre>
+              )}
+            </div>
+
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Use</th>
+                    <th>Date</th>
+                    <th>OCR / label</th>
+                    <th>Select item</th>
+                    <th>Qty</th>
+                    <th>Price</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ocrRows.map((row, idx) => (
+                    <tr key={`${row.row_number}-${idx}`}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={row.include !== false}
+                          onChange={(e) => updateOcrRow(idx, { include: e.target.checked })}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="date"
+                          value={row.sale_date ? String(row.sale_date).slice(0, 10) : ''}
+                          onChange={(e) => updateOcrRow(idx, { sale_date: e.target.value })}
+                          style={{ minWidth: 130 }}
+                        />
+                      </td>
+                      <td style={{ minWidth: 140 }}>
+                        <div className="muted" style={{ fontSize: '0.75rem' }}>
+                          {row.ocr_text || '—'}
+                        </div>
+                        <input
+                          value={row.product_name || ''}
+                          placeholder="Item text"
+                          onChange={(e) => updateOcrRow(idx, { product_name: e.target.value })}
+                        />
+                        {row.message && (
+                          <div className="muted" style={{ fontSize: '0.72rem' }}>
+                            {row.message}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ minWidth: 200 }}>
+                        <select
+                          value={row.matched_product_id || ''}
+                          onChange={(e) => selectProduct(idx, Number(e.target.value))}
+                        >
+                          <option value="">Select inventory item…</option>
+                          {(row.suggestions || []).map((s) => (
+                            <option key={`sug-${s.id}`} value={s.id}>
+                              ★ {s.sku} — {s.name} ({peso(s.sell_price)})
+                            </option>
+                          ))}
+                          {products.slice(0, 400).map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.sku} — {p.name}
+                            </option>
+                          ))}
+                        </select>
+                        {row.matched_product_name && (
+                          <div className="muted" style={{ fontSize: '0.72rem' }}>
+                            {row.matched_product_name}
+                            {row.current_stock != null ? ` · stock ${row.current_stock}` : ''}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={row.quantity ?? ''}
+                          onChange={(e) => updateOcrRow(idx, { quantity: Number(e.target.value) })}
+                          style={{ width: 70 }}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={row.unit_price ?? ''}
+                          onChange={(e) =>
+                            updateOcrRow(idx, {
+                              unit_price: e.target.value === '' ? null : Number(e.target.value),
+                            })
+                          }
+                          style={{ width: 90 }}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="panel" style={{ marginBottom: '1rem' }}>
         <h2>Stock CSV Upload</h2>
         <p className="muted">
           Manage inventory from CSV/Excel. Columns: <code>ITEM CODE</code>, <code>ENDING STOCKS</code> (or{' '}
           <code>QTY</code>), optional DESCRIPTION / UNIT PRICE / RETAIL PRICE / CATEGORY / SUPPLIER / ADJUST.
-          Sample: <code>samples/kygs_stock_upload_template.csv</code> or full{' '}
-          <code>samples/kygs_current_inventory.csv</code>.
         </p>
         <div className="toolbar">
           {(['set', 'adjust', 'upsert'] as StockMode[]).map((m) => (
@@ -229,7 +501,9 @@ export default function ImportPage() {
                     <td>{r.current_stock ?? '—'}</td>
                     <td>{r.new_stock ?? '—'}</td>
                     <td>
-                      <span className={`badge ${r.status === 'matched' ? 'matched' : r.status === 'will_create' ? 'warn' : 'unmatched'}`}>
+                      <span
+                        className={`badge ${r.status === 'matched' ? 'matched' : r.status === 'will_create' ? 'warn' : 'unmatched'}`}
+                      >
                         {r.status}
                       </span>
                       <div className="muted" style={{ fontSize: '0.78rem' }}>
@@ -240,9 +514,6 @@ export default function ImportPage() {
                 ))}
               </tbody>
             </table>
-            {stockPreview.rows.length > 100 && (
-              <p className="muted">Showing first 100 of {stockPreview.rows.length} rows</p>
-            )}
           </div>
         )}
       </div>
@@ -250,8 +521,8 @@ export default function ImportPage() {
       <div className="panel" style={{ marginBottom: '1rem' }}>
         <h2>Full KYGS Workbook</h2>
         <p className="muted">
-          Imports INVENTORY ending stocks (no double-deduction), SALES history, INFOSHEET services/categories/suppliers,
-          CRITICAL reorder margins, and DELISTED products. Replaces current inventory/sales when replace is on.
+          Imports INVENTORY ending stocks, SALES history, INFOSHEET, CRITICAL, and DELISTED. Replaces current
+          inventory/sales when replace is on.
         </p>
         <div className="toolbar">
           <button className="btn" disabled={busy} onClick={runLocalWorkbook}>
@@ -289,20 +560,26 @@ export default function ImportPage() {
           e.preventDefault()
           setDrag(false)
           const f = e.dataTransfer.files?.[0]
-          if (f) onFile(f)
+          if (f) {
+            if (f.type.startsWith('image/')) onPhoto(f)
+            else onFile(f)
+          }
         }}
       >
         <p style={{ marginTop: 0, fontFamily: 'Oswald, sans-serif', fontSize: '1.3rem', letterSpacing: '0.04em' }}>
-          DROP SALES REPORT / CSV HERE
+          DROP SALES CSV / PHOTO HERE
         </p>
         <p className="muted">
-          Accepts KYGS SALES sheet exports (.csv / .xlsx / .xlsm). Auto-selects the SALES sheet inside workbooks.
-          Sample: <code>samples/kygs_sales_export.csv</code>
+          Accepts KYGS SALES exports (.csv / .xlsx / .xlsm) or a photo of a handwritten report.
         </p>
         <input
           type="file"
-          accept=".csv,.xlsx,.xlsm,.xls"
-          onChange={(e) => onFile(e.target.files?.[0] || null)}
+          accept=".csv,.xlsx,.xlsm,.xls,image/*"
+          onChange={(e) => {
+            const f = e.target.files?.[0] || null
+            if (f?.type.startsWith('image/')) onPhoto(f)
+            else onFile(f)
+          }}
         />
       </div>
 
@@ -329,6 +606,7 @@ export default function ImportPage() {
                 <tr>
                   <th>Row</th>
                   <th>Invoice</th>
+                  <th>Date</th>
                   <th>SKU / Product</th>
                   <th>Qty</th>
                   <th>Match</th>
@@ -341,6 +619,7 @@ export default function ImportPage() {
                   <tr key={r.row_number}>
                     <td>{r.row_number}</td>
                     <td>{r.invoice_no || '—'}</td>
+                    <td>{r.sale_date ? String(r.sale_date).slice(0, 10) : '—'}</td>
                     <td>
                       {r.sku || '—'}
                       <div className="muted">{r.product_name}</div>
