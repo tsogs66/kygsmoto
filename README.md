@@ -30,7 +30,9 @@ The original Excel+VBA pattern (seen in open systems like [Sales_Inventory_Track
 - Inventory column sorting + soft-delete stock; sales item search + week/month/year history filters
 - **Sales report upload**: preview matches, then import and deduct stock from written sales files
 - Empty DB on first start — import the KYGS workbook / stock CSV, or add products manually (no hard-coded demo sales/inventory)
-- PWA install for Android; Docker image for Proxmox LXC
+- **Backdate sales** on POS with a sale date/time picker
+- **Handwritten sales photo scan** (OCR) with editable review — correct qty/price/date and select inventory items before import
+- PWA install for Android; Docker image for Proxmox LXC (includes Tesseract OCR)
 
 ## Quick start (development)
 
