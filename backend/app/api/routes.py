@@ -46,10 +46,25 @@ from app.services import reports as report_service
 from app.services.import_sales import import_sales_file, preview_sales_file
 from app.services.import_stock import import_stock_file, preview_stock_file
 from app.services.kygs_import import import_kygs_workbook
+from app.services.seed import purge_hardcoded_demo
 from app.services.stock import apply_stock_change, stock_status
 from pathlib import Path
 
 router = APIRouter()
+
+
+@router.post("/admin/purge-demo")
+def admin_purge_demo(force: bool = Query(False), db: Session = Depends(get_db)):
+    """Remove leftover hard-coded demo inventory/sales from older builds.
+
+    Pass force=true to run again even if already cleared once.
+    """
+    if force:
+        from app.models.models import AppMeta
+
+        db.query(AppMeta).filter(AppMeta.key == "demo_cleared").delete()
+        db.commit()
+    return purge_hardcoded_demo(db)
 
 
 def _product_out(p: Product) -> ProductOut:

@@ -14,13 +14,13 @@ from app.models.models import Category, Product
 
 
 def _seed_minimal(db):
-    cat = Category(name="Oils & Fluids")
+    cat = Category(name="Test Oils")
     db.add(cat)
     db.flush()
     db.add(
         Product(
-            sku="MOT-7100-1L",
-            name="Motul 7100 4T 10W-40 1L",
+            sku="TEST-OIL-1L",
+            name="Test Motul Oil 1L",
             category_id=cat.id,
             cost_price=480,
             sell_price=650,
@@ -30,13 +30,24 @@ def _seed_minimal(db):
     )
     db.add(
         Product(
-            sku="SPK-CR7HIX",
-            name="NGK Spark Plug CR7HIX",
+            sku="TEST-SPARK-1",
+            name="Test Spark Plug",
             category_id=cat.id,
             cost_price=180,
             sell_price=280,
             stock_qty=50,
             reorder_level=12,
+        )
+    )
+    db.add(
+        Product(
+            sku="TEST-LABOR",
+            name="Test Change Oil Labor",
+            category_id=cat.id,
+            cost_price=0,
+            sell_price=100,
+            stock_qty=999,
+            reorder_level=0,
         )
     )
     db.commit()
@@ -63,12 +74,12 @@ def test_dashboard_and_products(client):
     dash = client.get("/api/reports/dashboard").json()
     assert dash["total_products"] >= 2
     products = client.get("/api/products").json()
-    assert any(p["sku"] == "MOT-7100-1L" for p in products)
+    assert any(p["sku"] == "TEST-OIL-1L" for p in products)
 
 
 def test_sale_deducts_stock(client):
     products = client.get("/api/products").json()
-    product = next(p for p in products if p["sku"] == "SPK-CR7HIX")
+    product = next(p for p in products if p["sku"] == "TEST-SPARK-1")
     before = product["stock_qty"]
     r = client.post(
         "/api/sales",
@@ -79,13 +90,13 @@ def test_sale_deducts_stock(client):
     )
     assert r.status_code == 200
     updated = client.get("/api/products").json()
-    after = next(p for p in updated if p["sku"] == "SPK-CR7HIX")["stock_qty"]
+    after = next(p for p in updated if p["sku"] == "TEST-SPARK-1")["stock_qty"]
     assert after == before - 1
 
 
 def test_sales_file_import_deducts_stock(client):
     products = client.get("/api/products").json()
-    oil = next(p for p in products if p["sku"] == "MOT-7100-1L")
+    oil = next(p for p in products if p["sku"] == "TEST-OIL-1L")
     before = oil["stock_qty"]
 
     sample = Path(__file__).resolve().parents[2] / "samples" / "sample_sales_import.csv"
@@ -109,7 +120,7 @@ def test_sales_file_import_deducts_stock(client):
     assert data["stock_deducted"] > 0
 
     updated = client.get("/api/products").json()
-    after = next(p for p in updated if p["sku"] == "MOT-7100-1L")["stock_qty"]
+    after = next(p for p in updated if p["sku"] == "TEST-OIL-1L")["stock_qty"]
     assert after == before - 2
 
 
@@ -133,6 +144,44 @@ def test_sales_search_and_period(client):
     r = client.get("/api/sales?q=spark&period=yearly&year=2026")
     assert r.status_code == 200
     assert isinstance(r.json(), list)
+
+
+def test_purge_hardcoded_demo_removes_sample_skus(client):
+    """Startup purge should strip leftover SAMPLE_* inventory/sales."""
+    from app.core.database import SessionLocal
+    from app.models.models import AppMeta, Product, Sale, SaleItem, Customer
+    from app.services.seed import DEMO_SKUS, purge_hardcoded_demo
+
+    db = SessionLocal()
+    try:
+        db.query(AppMeta).filter(AppMeta.key == "demo_cleared").delete()
+        demo = Product(sku="MOT-7100-1L", name="Motul demo", cost_price=1, sell_price=2, stock_qty=5)
+        db.add(demo)
+        db.flush()
+        sale = Sale(invoice_no="SI-1014", payment_method="cash", source="manual", subtotal=2, total=2)
+        sale.items.append(
+            SaleItem(
+                product_id=demo.id,
+                sku=demo.sku,
+                product_name=demo.name,
+                quantity=1,
+                unit_price=2,
+                cost_price=1,
+                line_total=2,
+            )
+        )
+        db.add(sale)
+        db.add(Customer(name="Juan Dela Cruz"))
+        db.commit()
+
+        result = purge_hardcoded_demo(db)
+        assert result["purged"] is True
+        assert db.query(Product).filter(Product.sku.in_(DEMO_SKUS)).count() == 0
+        assert db.query(Sale).filter(Sale.invoice_no == "SI-1014").count() == 0
+        assert db.query(Customer).filter(Customer.name == "Juan Dela Cruz").count() == 0
+        assert db.query(Product).filter(Product.sku == "TEST-OIL-1L").count() == 1
+    finally:
+        db.close()
 
 
 def test_dashboard_month_selector(client):

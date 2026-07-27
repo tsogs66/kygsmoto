@@ -251,7 +251,7 @@ export default function ImportPage() {
         <h2>Full KYGS Workbook</h2>
         <p className="muted">
           Imports INVENTORY ending stocks (no double-deduction), SALES history, INFOSHEET services/categories/suppliers,
-          CRITICAL reorder margins, and DELISTED products. Replaces current demo/seed data.
+          CRITICAL reorder margins, and DELISTED products. Replaces current inventory/sales when replace is on.
         </p>
         <div className="toolbar">
           <button className="btn" disabled={busy} onClick={runLocalWorkbook}>
