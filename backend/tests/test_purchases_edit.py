@@ -99,6 +99,31 @@ def test_create_edit_purchase_adjusts_stock(client):
     # 20 + 2 = 22
     assert spark2["stock_qty"] == 22
 
+    # Frontend-style naive datetime-local payload must persist wall-clock time
+    line_ids = [i["id"] for i in body["items"]]
+    again = client.put(
+        f"/api/purchases/{po['id']}",
+        json={
+            "supplier_id": None,
+            "purchase_date": "2025-06-15T14:30:00",
+            "notes": "afternoon delivery",
+            "items": [
+                {"id": line_ids[0], "product_id": oil["id"], "quantity": 4, "unit_cost": 110},
+                {"id": line_ids[1], "product_id": spark["id"], "quantity": 2, "unit_cost": 50},
+            ],
+        },
+    )
+    assert again.status_code == 200
+    again_body = again.json()
+    assert again_body["purchase_date"].startswith("2025-06-15T14:30")
+    assert again_body["notes"] == "afternoon delivery"
+    assert again_body["total"] == 4 * 110 + 2 * 50
+    listed = client.get("/api/purchases").json()
+    row = next(p for p in listed if p["id"] == po["id"])
+    assert row["purchase_date"].startswith("2025-06-15T14:30")
+    assert row["notes"] == "afternoon delivery"
+    assert row["total"] == again_body["total"]
+
 
 def test_purchase_receipt_upload(client, tmp_path):
     products = client.get("/api/products").json()

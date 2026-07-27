@@ -447,7 +447,11 @@ def create_purchase(payload: PurchaseCreate, db: Session = Depends(get_db)):
         raise HTTPException(400, "Purchase requires items")
     purchase = Purchase(
         po_no=_next_no(db, Purchase, "po_no", "PO"),
-        purchase_date=payload.purchase_date or datetime.utcnow(),
+        purchase_date=(
+            (payload.purchase_date.replace(tzinfo=None) if payload.purchase_date.tzinfo else payload.purchase_date)
+            if payload.purchase_date
+            else datetime.utcnow()
+        ),
         supplier_id=payload.supplier_id,
         notes=payload.notes,
     )
@@ -487,32 +491,34 @@ def update_purchase(purchase_id: int, payload: PurchaseUpdate, db: Session = Dep
     purchase = (
         db.query(Purchase)
         .options(joinedload(Purchase.supplier), joinedload(Purchase.items).joinedload(PurchaseItem.product))
-        .get(purchase_id)
+        .filter(Purchase.id == purchase_id)
+        .first()
     )
     if not purchase:
         raise HTTPException(404, "Purchase not found")
     if not payload.items:
         raise HTTPException(400, "Purchase requires at least one item")
 
-    fields = payload.model_fields_set
-    if "supplier_id" in fields:
-        purchase.supplier_id = payload.supplier_id
-    if "notes" in fields:
-        purchase.notes = payload.notes
-    if "purchase_date" in fields:
-        purchase.purchase_date = payload.purchase_date
+    # Always apply header fields from the edit payload (frontend sends full form).
+    purchase.supplier_id = payload.supplier_id
+    purchase.notes = payload.notes
+    if payload.purchase_date is not None:
+        # Strip tzinfo so SQLite stores the wall-clock time the user picked.
+        pdt = payload.purchase_date
+        purchase.purchase_date = pdt.replace(tzinfo=None) if getattr(pdt, "tzinfo", None) else pdt
 
     old_items = {i.id: i for i in list(purchase.items)}
-    kept_ids: set[int] = set()
-    new_lines: list[PurchaseItem] = []
+    seen_ids: set[int] = set()
     subtotal = 0.0
 
     for item in payload.items:
-        product = db.query(Product).get(item.product_id)
+        product = db.get(Product, item.product_id)
         if not product:
             raise HTTPException(400, f"Product {item.product_id} not found")
         unit_cost = item.unit_cost if item.unit_cost is not None else product.cost_price
         qty = float(item.quantity)
+        if qty <= 0:
+            raise HTTPException(400, "Quantity must be greater than 0")
         line_total = qty * unit_cost
         subtotal += line_total
 
@@ -528,16 +534,13 @@ def update_purchase(purchase_id: int, payload: PurchaseUpdate, db: Session = Dep
                     reference=purchase.po_no,
                     notes=f"Purchase {purchase.po_no} line edited",
                 )
-            kept_ids.add(old.id)
             old.quantity = qty
             old.unit_cost = unit_cost
             old.line_total = line_total
-            new_lines.append(old)
+            seen_ids.add(old.id)
         else:
-            # New line (or product changed on existing line)
             if old:
-                # reverse old product qty then treat as new
-                old_product = db.query(Product).get(old.product_id)
+                old_product = db.get(Product, old.product_id)
                 if old_product:
                     apply_stock_change(
                         db,
@@ -547,7 +550,8 @@ def update_purchase(purchase_id: int, payload: PurchaseUpdate, db: Session = Dep
                         reference=purchase.po_no,
                         notes=f"Purchase {purchase.po_no} line replaced",
                     )
-                kept_ids.add(old.id)
+                db.delete(old)
+                seen_ids.add(old.id)
             apply_stock_change(
                 db,
                 product,
@@ -556,7 +560,7 @@ def update_purchase(purchase_id: int, payload: PurchaseUpdate, db: Session = Dep
                 reference=purchase.po_no,
                 notes=f"Purchase {purchase.po_no} line added/updated",
             )
-            new_lines.append(
+            purchase.items.append(
                 PurchaseItem(
                     product_id=product.id,
                     quantity=qty,
@@ -566,10 +570,10 @@ def update_purchase(purchase_id: int, payload: PurchaseUpdate, db: Session = Dep
             )
         product.cost_price = unit_cost
 
-    # Removed lines → reverse stock
+    # Removed lines → reverse stock and delete
     for oid, old in old_items.items():
-        if oid not in kept_ids and old not in new_lines:
-            old_product = db.query(Product).get(old.product_id)
+        if oid not in seen_ids:
+            old_product = db.get(Product, old.product_id)
             if old_product:
                 apply_stock_change(
                     db,
@@ -579,15 +583,18 @@ def update_purchase(purchase_id: int, payload: PurchaseUpdate, db: Session = Dep
                     reference=purchase.po_no,
                     notes=f"Purchase {purchase.po_no} line removed",
                 )
+            db.delete(old)
 
-    purchase.items = new_lines
     purchase.subtotal = subtotal
     purchase.total = subtotal
+    db.add(purchase)
     db.commit()
+    db.expire_all()
     purchase = (
         db.query(Purchase)
         .options(joinedload(Purchase.supplier), joinedload(Purchase.items).joinedload(PurchaseItem.product))
-        .get(purchase_id)
+        .filter(Purchase.id == purchase_id)
+        .first()
     )
     return _purchase_out(purchase)
 
