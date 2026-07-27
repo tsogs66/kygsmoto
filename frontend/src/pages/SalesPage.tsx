@@ -2,23 +2,39 @@ import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api, peso } from '../api'
 import type { Customer, Product, Sale } from '../api'
+import { useSortableRows } from '../hooks/useSortableRows'
 
 type CartLine = { product: Product; quantity: number }
+type Period = 'all' | 'weekly' | 'monthly' | 'yearly'
 
 export default function SalesPage() {
+  const now = new Date()
   const [products, setProducts] = useState<Product[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
   const [sales, setSales] = useState<Sale[]>([])
   const [cart, setCart] = useState<CartLine[]>([])
   const [customerId, setCustomerId] = useState('')
   const [payment, setPayment] = useState('cash')
+  const [productSearch, setProductSearch] = useState('')
   const [productId, setProductId] = useState('')
   const [qty, setQty] = useState('1')
+  const [historySearch, setHistorySearch] = useState('')
+  const [period, setPeriod] = useState<Period>('all')
+  const [year, setYear] = useState(now.getFullYear())
+  const [month, setMonth] = useState(now.getMonth() + 1)
   const [error, setError] = useState('')
   const [ok, setOk] = useState('')
 
   const load = () => {
-    Promise.all([api.products(), api.customers(), api.sales()])
+    const params = new URLSearchParams()
+    if (historySearch.trim()) params.set('q', historySearch.trim())
+    if (period !== 'all') {
+      params.set('period', period)
+      params.set('year', String(year))
+      if (period === 'monthly') params.set('month', String(month))
+    }
+    const qs = params.toString() ? `?${params}` : ''
+    Promise.all([api.products(), api.customers(), api.sales(qs)])
       .then(([p, c, s]) => {
         setProducts(p.filter((x) => x.is_active))
         setCustomers(c)
@@ -29,7 +45,31 @@ export default function SalesPage() {
 
   useEffect(() => {
     load()
-  }, [])
+  }, [period, year, month])
+
+  const filteredProducts = useMemo(() => {
+    const q = productSearch.trim().toLowerCase()
+    if (!q) return products
+    return products.filter(
+      (p) =>
+        p.sku.toLowerCase().includes(q) ||
+        p.name.toLowerCase().includes(q) ||
+        (p.brand || '').toLowerCase().includes(q) ||
+        (p.fitment || '').toLowerCase().includes(q),
+    )
+  }, [products, productSearch])
+
+  const saleRows = useMemo(
+    () =>
+      sales.map((s) => ({
+        ...s,
+        customer_label: s.customer_name || 'Walk-in',
+        items_label: s.items.map((i) => i.product_name).join(', '),
+        item_count: s.items.length,
+      })),
+    [sales],
+  )
+  const { sorted, toggle, indicator } = useSortableRows(saleRows, 'sale_date', 'desc')
 
   const total = useMemo(
     () => cart.reduce((sum, line) => sum + line.quantity * line.product.sell_price, 0),
@@ -84,7 +124,7 @@ export default function SalesPage() {
       <div className="page-header">
         <div>
           <h1>Sales / POS</h1>
-          <p>Ring up parts and labor — stock deducts automatically.</p>
+          <p>Search items, ring up sales, and review history by week / month / year.</p>
         </div>
       </div>
 
@@ -115,11 +155,22 @@ export default function SalesPage() {
                 <option value="card">Card</option>
               </select>
             </label>
+            <label className="full">
+              Search item
+              <input
+                placeholder="SKU, name, brand, fitment…"
+                value={productSearch}
+                onChange={(e) => {
+                  setProductSearch(e.target.value)
+                  setProductId('')
+                }}
+              />
+            </label>
             <label>
               Product
               <select value={productId} onChange={(e) => setProductId(e.target.value)}>
-                <option value="">Select item</option>
-                {products.map((p) => (
+                <option value="">Select item ({filteredProducts.length})</option>
+                {filteredProducts.slice(0, 200).map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.sku} — {p.name} (stock {p.stock_qty})
                   </option>
@@ -177,26 +228,84 @@ export default function SalesPage() {
         </form>
 
         <div className="panel">
-          <h2>Recent Transactions</h2>
+          <h2>Sales History</h2>
+          <div className="toolbar">
+            <input
+              placeholder="Search invoice / item / customer…"
+              value={historySearch}
+              onChange={(e) => setHistorySearch(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && load()}
+            />
+            <button className="btn secondary" type="button" onClick={load}>
+              Search
+            </button>
+            {(['all', 'weekly', 'monthly', 'yearly'] as Period[]).map((p) => (
+              <button key={p} className={`btn ${period === p ? '' : 'secondary'}`} type="button" onClick={() => setPeriod(p)}>
+                {p}
+              </button>
+            ))}
+            {period === 'monthly' && (
+              <select value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+                {Array.from({ length: 12 }, (_, i) => (
+                  <option key={i + 1} value={i + 1}>
+                    {i + 1}
+                  </option>
+                ))}
+              </select>
+            )}
+            {period !== 'all' && (
+              <select value={year} onChange={(e) => setYear(Number(e.target.value))}>
+                {Array.from({ length: 6 }, (_, i) => now.getFullYear() - i).map((y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Invoice</th>
-                  <th>Customer</th>
-                  <th>Source</th>
-                  <th>Total</th>
+                  <th style={{ cursor: 'pointer' }} onClick={() => toggle('invoice_no')}>
+                    Invoice{indicator('invoice_no')}
+                  </th>
+                  <th style={{ cursor: 'pointer' }} onClick={() => toggle('sale_date')}>
+                    Date{indicator('sale_date')}
+                  </th>
+                  <th style={{ cursor: 'pointer' }} onClick={() => toggle('customer_label')}>
+                    Customer{indicator('customer_label')}
+                  </th>
+                  <th style={{ cursor: 'pointer' }} onClick={() => toggle('items_label')}>
+                    Items{indicator('items_label')}
+                  </th>
+                  <th style={{ cursor: 'pointer' }} onClick={() => toggle('total')}>
+                    Total{indicator('total')}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {sales.slice(0, 20).map((s) => (
+                {sorted.slice(0, 50).map((s) => (
                   <tr key={s.id}>
                     <td>{s.invoice_no}</td>
-                    <td>{s.customer_name || 'Walk-in'}</td>
-                    <td>{s.source}</td>
+                    <td>{new Date(s.sale_date).toLocaleDateString()}</td>
+                    <td>{s.customer_label}</td>
+                    <td title={s.items_label}>
+                      {s.item_count} item(s)
+                      <div className="muted" style={{ fontSize: '0.78rem', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {s.items_label}
+                      </div>
+                    </td>
                     <td>{peso(s.total)}</td>
                   </tr>
                 ))}
+                {!sorted.length && (
+                  <tr>
+                    <td colSpan={5} className="muted">
+                      No sales found.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

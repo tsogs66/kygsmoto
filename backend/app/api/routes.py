@@ -40,6 +40,7 @@ from app.schemas import (
     WorkbookImportOut,
     StockPreviewOut,
     StockImportOut,
+    ProductPerformanceOut,
 )
 from app.services import reports as report_service
 from app.services.import_sales import import_sales_file, preview_sales_file
@@ -192,9 +193,12 @@ def list_products(
     q: Optional[str] = None,
     category_id: Optional[int] = None,
     low_stock: bool = False,
+    include_inactive: bool = False,
     db: Session = Depends(get_db),
 ):
     query = db.query(Product).options(joinedload(Product.category), joinedload(Product.supplier))
+    if not include_inactive:
+        query = query.filter(Product.is_active.is_(True))
     if q:
         like = f"%{q}%"
         query = query.filter(
@@ -258,16 +262,67 @@ def adjust_stock(product_id: int, payload: StockAdjust, db: Session = Depends(ge
     return _product_out(obj)
 
 
+@router.delete("/products/{product_id}")
+def delete_product(
+    product_id: int,
+    hard: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """Delete stock item. Soft-deletes by default (is_active=false, stock zeroed).
+    hard=true permanently removes if unused in sales/purchases."""
+    obj = db.query(Product).get(product_id)
+    if not obj:
+        raise HTTPException(404, "Product not found")
+    if hard:
+        from app.models.models import SaleItem, PurchaseItem, StockMovement
+        used = (
+            db.query(SaleItem).filter(SaleItem.product_id == product_id).first()
+            or db.query(PurchaseItem).filter(PurchaseItem.product_id == product_id).first()
+        )
+        if used:
+            raise HTTPException(400, "Product is used in sales/purchases — use soft delete")
+        db.query(StockMovement).filter(StockMovement.product_id == product_id).delete()
+        db.delete(obj)
+        db.commit()
+        return {"ok": True, "mode": "hard", "id": product_id}
+    # soft delete
+    if float(obj.stock_qty or 0) != 0:
+        apply_stock_change(db, obj, -float(obj.stock_qty or 0), "adjust", notes="Deleted / cleared stock")
+    obj.is_active = False
+    db.commit()
+    return {"ok": True, "mode": "soft", "id": product_id}
+
+
 # ---- Sales ----
 @router.get("/sales", response_model=list[SaleOut])
-def list_sales(limit: int = 100, db: Session = Depends(get_db)):
-    sales = (
-        db.query(Sale)
-        .options(joinedload(Sale.customer), joinedload(Sale.items))
-        .order_by(Sale.sale_date.desc())
-        .limit(limit)
-        .all()
-    )
+def list_sales(
+    limit: int = 200,
+    q: Optional[str] = None,
+    period: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(Sale).options(joinedload(Sale.customer), joinedload(Sale.items))
+    if period in {"daily", "weekly", "monthly", "yearly"}:
+        from app.services.reports import _period_bounds
+        start, end = _period_bounds(period, year, month)
+        query = query.filter(Sale.sale_date >= start, Sale.sale_date <= end)
+    sales = query.order_by(Sale.sale_date.desc()).limit(limit).all()
+    if q:
+        like = q.strip().lower()
+        filtered = []
+        for s in sales:
+            hay = " ".join(
+                [
+                    s.invoice_no or "",
+                    s.customer.name if s.customer else "",
+                    *[f"{i.sku or ''} {i.product_name or ''}" for i in s.items],
+                ]
+            ).lower()
+            if like in hay:
+                filtered.append(s)
+        sales = filtered
     return [_sale_out(s) for s in sales]
 
 
@@ -392,13 +447,29 @@ def create_purchase(payload: PurchaseCreate, db: Session = Depends(get_db)):
 
 # ---- Reports ----
 @router.get("/reports/dashboard", response_model=DashboardOut)
-def get_dashboard(db: Session = Depends(get_db)):
-    return report_service.dashboard(db)
+def get_dashboard(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    return report_service.dashboard(db, year=year, month=month)
+
+
+@router.get("/reports/product-performance", response_model=ProductPerformanceOut)
+def get_product_performance(
+    period: str = Query("monthly", pattern="^(weekly|monthly|yearly)$"),
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    metric: str = Query("amount", pattern="^(amount|qty|profit)$"),
+    limit: int = 10,
+    db: Session = Depends(get_db),
+):
+    return report_service.product_performance(db, period=period, year=year, month=month, metric=metric, limit=limit)
 
 
 @router.get("/reports/sales", response_model=PeriodReportOut)
 def get_sales_report(
-    period: str = Query("monthly", pattern="^(daily|monthly|yearly)$"),
+    period: str = Query("monthly", pattern="^(daily|weekly|monthly|yearly)$"),
     year: Optional[int] = None,
     month: Optional[int] = None,
     db: Session = Depends(get_db),

@@ -16,7 +16,28 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  dashboard: () => request<Dashboard>('/reports/dashboard'),
+  dashboard: (year?: number, month?: number) => {
+    const q = new URLSearchParams()
+    if (year) q.set('year', String(year))
+    if (month) q.set('month', String(month))
+    const qs = q.toString() ? `?${q}` : ''
+    return request<Dashboard>(`/reports/dashboard${qs}`)
+  },
+  productPerformance: (opts: {
+    period?: string
+    year?: number
+    month?: number
+    metric?: 'amount' | 'qty' | 'profit'
+    limit?: number
+  } = {}) => {
+    const q = new URLSearchParams()
+    q.set('period', opts.period || 'monthly')
+    q.set('metric', opts.metric || 'amount')
+    if (opts.year) q.set('year', String(opts.year))
+    if (opts.month) q.set('month', String(opts.month))
+    if (opts.limit) q.set('limit', String(opts.limit))
+    return request<ProductPerformance>(`/reports/product-performance?${q}`)
+  },
   products: (params: string = '') => request<Product[]>(`/products${params}`),
   createProduct: (body: Partial<Product>) =>
     request<Product>('/products', {
@@ -30,6 +51,10 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ quantity_change, notes }),
     }),
+  deleteProduct: (id: number, hard = false) =>
+    request<{ ok: boolean; mode: string; id: number }>(`/products/${id}?hard=${hard}`, {
+      method: 'DELETE',
+    }),
   categories: () => request<Category[]>('/categories'),
   customers: () => request<Customer[]>('/customers'),
   createCustomer: (body: Partial<Customer>) =>
@@ -39,7 +64,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   suppliers: () => request<Supplier[]>('/suppliers'),
-  sales: () => request<Sale[]>('/sales'),
+  sales: (params: string = '') => request<Sale[]>(`/sales${params}`),
   createSale: (body: SaleCreate) =>
     request<Sale>('/sales', {
       method: 'POST',
@@ -187,18 +212,26 @@ export type PurchaseCreate = {
 
 export type Dashboard = {
   shop_name: string
+  selected_year: number
+  selected_month: number
   total_products: number
   low_stock_count: number
   out_of_stock_count: number
   inventory_value_cost: number
   inventory_value_retail: number
   sales_today: number
+  sales_week: number
   sales_month: number
   sales_year: number
   profit_month: number
+  profit_year: number
   transactions_today: number
   transactions_month: number
-  top_products: { name: string; qty: number; amount: number }[]
+  top_products: ProductStat[]
+  top_products_month: ProductStat[]
+  top_products_year: ProductStat[]
+  top_profit_month: ProductStat[]
+  top_profit_year: ProductStat[]
   low_stock_items: {
     id: number
     sku: string
@@ -218,6 +251,24 @@ export type Dashboard = {
   monthly_trend: { label: string; total: number }[]
 }
 
+export type ProductStat = {
+  name: string
+  sku?: string
+  qty: number
+  amount: number
+  profit?: number
+}
+
+export type ProductPerformance = {
+  period: string
+  metric: string
+  start_date: string
+  end_date: string
+  year: number
+  month: number
+  items: ProductStat[]
+}
+
 export type PeriodReport = {
   period: string
   start_date: string
@@ -231,7 +282,7 @@ export type PeriodReport = {
   by_month: { month: string; total: number }[]
   by_category: { category: string; total: number }[]
   by_payment: { method: string; total: number }[]
-  top_products: { name: string; qty: number; amount: number }[]
+  top_products: { name: string; qty: number; amount: number; profit?: number }[]
 }
 
 export type InventoryReport = {

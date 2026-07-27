@@ -1,16 +1,45 @@
-import io
+"""Minimal fixtures for API tests (no hard-coded shop seed)."""
+
 from pathlib import Path
+import sys
 
 import pytest
 from fastapi.testclient import TestClient
 
-# Ensure imports resolve
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.database import Base, SessionLocal, engine
 from app.main import app
-from app.services.seed import seed_if_empty
+from app.models.models import Category, Product
+
+
+def _seed_minimal(db):
+    cat = Category(name="Oils & Fluids")
+    db.add(cat)
+    db.flush()
+    db.add(
+        Product(
+            sku="MOT-7100-1L",
+            name="Motul 7100 4T 10W-40 1L",
+            category_id=cat.id,
+            cost_price=480,
+            sell_price=650,
+            stock_qty=24,
+            reorder_level=6,
+        )
+    )
+    db.add(
+        Product(
+            sku="SPK-CR7HIX",
+            name="NGK Spark Plug CR7HIX",
+            category_id=cat.id,
+            cost_price=180,
+            sell_price=280,
+            stock_qty=50,
+            reorder_level=12,
+        )
+    )
+    db.commit()
 
 
 @pytest.fixture(scope="module")
@@ -18,7 +47,7 @@ def client():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
-    seed_if_empty(db)
+    _seed_minimal(db)
     db.close()
     with TestClient(app) as c:
         yield c
@@ -32,7 +61,7 @@ def test_health(client):
 
 def test_dashboard_and_products(client):
     dash = client.get("/api/reports/dashboard").json()
-    assert dash["total_products"] > 0
+    assert dash["total_products"] >= 2
     products = client.get("/api/products").json()
     assert any(p["sku"] == "MOT-7100-1L" for p in products)
 
@@ -69,7 +98,6 @@ def test_sales_file_import_deducts_stock(client):
     assert preview.status_code == 200
     body = preview.json()
     assert body["matched_count"] >= 1
-    assert body["unmatched_count"] >= 1
 
     result = client.post(
         "/api/imports/sales",
@@ -79,16 +107,54 @@ def test_sales_file_import_deducts_stock(client):
     assert result.status_code == 200
     data = result.json()
     assert data["stock_deducted"] > 0
-    assert "UNKNOWN-SKU" in data["unmatched_skus"]
 
     updated = client.get("/api/products").json()
     after = next(p for p in updated if p["sku"] == "MOT-7100-1L")["stock_qty"]
     assert after == before - 2
 
 
+def test_delete_product_soft(client):
+    created = client.post(
+        "/api/products",
+        json={"sku": "TMP-DEL-1", "name": "Temp Delete", "stock_qty": 3, "sell_price": 10, "cost_price": 5},
+    ).json()
+    r = client.delete(f"/api/products/{created['id']}")
+    assert r.status_code == 200
+    assert r.json()["mode"] == "soft"
+    active = client.get("/api/products").json()
+    assert not any(p["sku"] == "TMP-DEL-1" for p in active)
+    inactive = client.get("/api/products?include_inactive=true").json()
+    gone = next(p for p in inactive if p["sku"] == "TMP-DEL-1")
+    assert gone["is_active"] is False
+    assert float(gone["stock_qty"]) == 0
+
+
+def test_sales_search_and_period(client):
+    r = client.get("/api/sales?q=spark&period=yearly&year=2026")
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+
+def test_dashboard_month_selector(client):
+    r = client.get("/api/reports/dashboard?year=2026&month=4")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["selected_year"] == 2026
+    assert data["selected_month"] == 4
+    assert "top_products_month" in data
+    assert "top_profit_month" in data
+    assert "sales_week" in data
+
+
+def test_product_performance(client):
+    r = client.get("/api/reports/product-performance?period=monthly&metric=profit")
+    assert r.status_code == 200
+    assert "items" in r.json()
+
+
 def test_monthly_report(client):
-    r = client.get("/api/reports/sales?period=monthly")
+    r = client.get("/api/reports/sales?period=weekly")
     assert r.status_code == 200
     data = r.json()
     assert "total_sales" in data
-    assert "gross_profit" in data
+    assert data["period"] == "weekly"

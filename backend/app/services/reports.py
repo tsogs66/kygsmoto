@@ -2,21 +2,30 @@ from calendar import monthrange
 from datetime import datetime, date, timedelta
 from typing import Optional
 
-from sqlalchemy import func, extract, case
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
-from app.models.models import Product, Sale, SaleItem, Category, StockMovement
+from app.models.models import Product, Sale, SaleItem, StockMovement
 from app.services.stock import stock_status
 
 
-def _period_bounds(period: str, year: Optional[int] = None, month: Optional[int] = None):
+def _period_bounds(
+    period: str,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    week_start: Optional[date] = None,
+):
     today = date.today()
     year = year or today.year
     month = month or today.month
     if period == "daily":
         start = datetime.combine(today, datetime.min.time())
         end = datetime.combine(today, datetime.max.time())
+    elif period == "weekly":
+        base = week_start or (today - timedelta(days=today.weekday()))
+        start = datetime.combine(base, datetime.min.time())
+        end = datetime.combine(base + timedelta(days=6), datetime.max.time())
     elif period == "monthly":
         start = datetime(year, month, 1)
         end = datetime(year, month, monthrange(year, month)[1], 23, 59, 59)
@@ -24,15 +33,77 @@ def _period_bounds(period: str, year: Optional[int] = None, month: Optional[int]
         start = datetime(year, 1, 1)
         end = datetime(year, 12, 31, 23, 59, 59)
     else:
-        raise ValueError("period must be daily, monthly, or yearly")
+        raise ValueError("period must be daily, weekly, monthly, or yearly")
     return start, end
 
 
-def dashboard(db: Session) -> dict:
+def _product_stats(db: Session, start: datetime, end: datetime, limit: int = 10) -> list[dict]:
+    rows = (
+        db.query(
+            SaleItem.product_name,
+            SaleItem.sku,
+            func.sum(SaleItem.quantity).label("qty"),
+            func.sum(SaleItem.line_total).label("amount"),
+            func.sum((SaleItem.unit_price - SaleItem.cost_price) * SaleItem.quantity).label("profit"),
+        )
+        .join(Sale)
+        .filter(Sale.sale_date >= start, Sale.sale_date <= end)
+        .group_by(SaleItem.product_name, SaleItem.sku)
+        .all()
+    )
+    items = [
+        {
+            "name": r.product_name,
+            "sku": r.sku,
+            "qty": float(r.qty or 0),
+            "amount": float(r.amount or 0),
+            "profit": float(r.profit or 0),
+        }
+        for r in rows
+    ]
+    return items
+
+
+def product_performance(
+    db: Session,
+    period: str = "monthly",
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    metric: str = "amount",
+    limit: int = 10,
+) -> dict:
+    if metric not in {"amount", "qty", "profit"}:
+        raise ValueError("metric must be amount, qty, or profit")
+    start, end = _period_bounds(period if period in {"weekly", "monthly", "yearly"} else "monthly", year, month)
+    items = _product_stats(db, start, end, limit=500)
+    key = {"amount": "amount", "qty": "qty", "profit": "profit"}[metric]
+    ranked = sorted(items, key=lambda x: x[key], reverse=True)[:limit]
+    return {
+        "period": period,
+        "metric": metric,
+        "start_date": start.date(),
+        "end_date": end.date(),
+        "year": start.year,
+        "month": start.month,
+        "items": ranked,
+    }
+
+
+def dashboard(
+    db: Session,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+) -> dict:
     today = date.today()
-    month_start = datetime(today.year, today.month, 1)
-    year_start = datetime(today.year, 1, 1)
+    year = year or today.year
+    month = month or today.month
+    month_start = datetime(year, month, 1)
+    month_end = datetime(year, month, monthrange(year, month)[1], 23, 59, 59)
+    year_start = datetime(year, 1, 1)
+    year_end = datetime(year, 12, 31, 23, 59, 59)
     today_start = datetime.combine(today, datetime.min.time())
+    week_start = today - timedelta(days=today.weekday())
+    week_begin = datetime.combine(week_start, datetime.min.time())
 
     products = db.query(Product).filter(Product.is_active.is_(True)).all()
     low = [p for p in products if stock_status(p) == "low"]
@@ -41,13 +112,11 @@ def dashboard(db: Session) -> dict:
     inv_cost = sum((p.stock_qty or 0) * (p.cost_price or 0) for p in products)
     inv_retail = sum((p.stock_qty or 0) * (p.sell_price or 0) for p in products)
 
-    def sales_sum(start: datetime) -> tuple[float, int, float]:
-        rows = (
-            db.query(Sale)
-            .options(joinedload(Sale.items))
-            .filter(Sale.sale_date >= start)
-            .all()
-        )
+    def sales_sum(start: datetime, end: Optional[datetime] = None) -> tuple[float, int, float]:
+        q = db.query(Sale).options(joinedload(Sale.items)).filter(Sale.sale_date >= start)
+        if end:
+            q = q.filter(Sale.sale_date <= end)
+        rows = q.all()
         total = sum(s.total or 0 for s in rows)
         profit = 0.0
         for s in rows:
@@ -56,22 +125,30 @@ def dashboard(db: Session) -> dict:
         return total, len(rows), profit
 
     sales_today, tx_today, _ = sales_sum(today_start)
-    sales_month, tx_month, profit_month = sales_sum(month_start)
-    sales_year, _, _ = sales_sum(year_start)
+    sales_week, _, _ = sales_sum(week_begin)
+    sales_month, tx_month, profit_month = sales_sum(month_start, month_end)
+    sales_year, _, profit_year = sales_sum(year_start, year_end)
 
-    top = (
-        db.query(
-            SaleItem.product_name,
-            func.sum(SaleItem.quantity).label("qty"),
-            func.sum(SaleItem.line_total).label("amount"),
-        )
-        .join(Sale)
-        .filter(Sale.sale_date >= month_start)
-        .group_by(SaleItem.product_name)
-        .order_by(func.sum(SaleItem.line_total).desc())
-        .limit(5)
-        .all()
-    )
+    top_month = sorted(
+        _product_stats(db, month_start, month_end),
+        key=lambda x: x["amount"],
+        reverse=True,
+    )[:10]
+    top_year = sorted(
+        _product_stats(db, year_start, year_end),
+        key=lambda x: x["amount"],
+        reverse=True,
+    )[:10]
+    top_profit_month = sorted(
+        _product_stats(db, month_start, month_end),
+        key=lambda x: x["profit"],
+        reverse=True,
+    )[:10]
+    top_profit_year = sorted(
+        _product_stats(db, year_start, year_end),
+        key=lambda x: x["profit"],
+        reverse=True,
+    )[:10]
 
     recent = (
         db.query(Sale)
@@ -81,12 +158,15 @@ def dashboard(db: Session) -> dict:
         .all()
     )
 
-    # last 6 months trend
     trend = []
     for i in range(5, -1, -1):
-        mdate = (today.replace(day=1) - timedelta(days=i * 28)).replace(day=1)
-        # normalize month
-        y, m = mdate.year, mdate.month
+        # step back months from selected month
+        m_idx = month - 1 - i
+        y = year
+        while m_idx < 0:
+            m_idx += 12
+            y -= 1
+        m = m_idx + 1
         start = datetime(y, m, 1)
         end = datetime(y, m, monthrange(y, m)[1], 23, 59, 59)
         total = (
@@ -98,21 +178,26 @@ def dashboard(db: Session) -> dict:
 
     return {
         "shop_name": settings.shop_name,
+        "selected_year": year,
+        "selected_month": month,
         "total_products": len(products),
         "low_stock_count": len(low),
         "out_of_stock_count": len(out),
         "inventory_value_cost": round(inv_cost, 2),
         "inventory_value_retail": round(inv_retail, 2),
         "sales_today": round(sales_today, 2),
+        "sales_week": round(sales_week, 2),
         "sales_month": round(sales_month, 2),
         "sales_year": round(sales_year, 2),
         "profit_month": round(profit_month, 2),
+        "profit_year": round(profit_year, 2),
         "transactions_today": tx_today,
         "transactions_month": tx_month,
-        "top_products": [
-            {"name": r.product_name, "qty": float(r.qty or 0), "amount": float(r.amount or 0)}
-            for r in top
-        ],
+        "top_products": top_month[:5],
+        "top_products_month": top_month,
+        "top_products_year": top_year,
+        "top_profit_month": top_profit_month,
+        "top_profit_year": top_profit_year,
         "low_stock_items": [
             {
                 "id": p.id,
@@ -177,9 +262,10 @@ def period_report(
             by_category[cat] = by_category.get(cat, 0) + item.line_total
             key = item.product_name
             if key not in product_map:
-                product_map[key] = {"name": key, "qty": 0.0, "amount": 0.0}
+                product_map[key] = {"name": key, "qty": 0.0, "amount": 0.0, "profit": 0.0}
             product_map[key]["qty"] += item.quantity
             product_map[key]["amount"] += item.line_total
+            product_map[key]["profit"] += (item.unit_price - item.cost_price) * item.quantity
 
     top_products = sorted(product_map.values(), key=lambda x: x["amount"], reverse=True)[:15]
 
@@ -194,7 +280,10 @@ def period_report(
         "items_sold": items_sold,
         "by_day": [{"date": k, "total": round(v, 2)} for k, v in sorted(by_day.items())],
         "by_month": [{"month": k, "total": round(v, 2)} for k, v in sorted(by_month.items())],
-        "by_category": [{"category": k, "total": round(v, 2)} for k, v in sorted(by_category.items(), key=lambda x: -x[1])],
+        "by_category": [
+            {"category": k, "total": round(v, 2)}
+            for k, v in sorted(by_category.items(), key=lambda x: -x[1])
+        ],
         "by_payment": [{"method": k, "total": round(v, 2)} for k, v in by_payment.items()],
         "top_products": top_products,
     }

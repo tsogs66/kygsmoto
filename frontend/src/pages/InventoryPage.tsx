@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api, peso } from '../api'
 import type { Category, Product } from '../api'
+import { useSortableRows } from '../hooks/useSortableRows'
 
 export default function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([])
@@ -9,6 +10,7 @@ export default function InventoryPage() {
   const [q, setQ] = useState('')
   const [lowOnly, setLowOnly] = useState(false)
   const [error, setError] = useState('')
+  const [ok, setOk] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({
     sku: '',
@@ -40,6 +42,7 @@ export default function InventoryPage() {
   }, [lowOnly])
 
   const filteredHint = useMemo(() => `${products.length} items`, [products])
+  const { sorted, toggle, indicator } = useSortableRows(products, 'name', 'asc')
 
   const onCreate = async (e: FormEvent) => {
     e.preventDefault()
@@ -84,12 +87,25 @@ export default function InventoryPage() {
     }
   }
 
+  const remove = async (p: Product) => {
+    if (!confirm(`Delete stock item ${p.sku} — ${p.name}?\nThis clears stock and deactivates the SKU.`)) return
+    setError('')
+    setOk('')
+    try {
+      const r = await api.deleteProduct(p.id, false)
+      setOk(`Deleted ${p.sku} (${r.mode})`)
+      load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Delete failed')
+    }
+  }
+
   return (
     <div>
       <div className="page-header">
         <div>
           <h1>Inventory</h1>
-          <p>Parts, oils, tires, accessories — with reorder alerts.</p>
+          <p>Parts, oils, tires, accessories — sortable columns, adjust or delete stock.</p>
         </div>
         <button className="btn" onClick={() => setShowForm((v) => !v)}>
           {showForm ? 'Close' : 'Add Product'}
@@ -97,6 +113,7 @@ export default function InventoryPage() {
       </div>
 
       {error && <div className="error-banner">{error}</div>}
+      {ok && <div className="success-banner">{ok}</div>}
 
       {showForm && (
         <form className="panel" onSubmit={onCreate} style={{ marginBottom: '1rem' }}>
@@ -185,18 +202,32 @@ export default function InventoryPage() {
           <table>
             <thead>
               <tr>
-                <th>SKU</th>
-                <th>Product</th>
-                <th>Category</th>
-                <th>Stock</th>
-                <th>Cost</th>
-                <th>Price</th>
-                <th>Status</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggle('sku')}>
+                  SKU{indicator('sku')}
+                </th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggle('name')}>
+                  Product{indicator('name')}
+                </th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggle('category_name')}>
+                  Category{indicator('category_name')}
+                </th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggle('stock_qty')}>
+                  Stock{indicator('stock_qty')}
+                </th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggle('cost_price')}>
+                  Cost{indicator('cost_price')}
+                </th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggle('sell_price')}>
+                  Price{indicator('sell_price')}
+                </th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggle('stock_status')}>
+                  Status{indicator('stock_status')}
+                </th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {products.map((p) => (
+              {sorted.map((p) => (
                 <tr key={p.id}>
                   <td>{p.sku}</td>
                   <td>
@@ -215,13 +246,23 @@ export default function InventoryPage() {
                   <td>
                     <span className={`badge ${p.stock_status}`}>{p.stock_status}</span>
                   </td>
-                  <td>
+                  <td style={{ display: 'flex', gap: '0.35rem' }}>
                     <button className="btn secondary" onClick={() => adjust(p.id)}>
                       Adjust
+                    </button>
+                    <button className="btn secondary" onClick={() => remove(p)}>
+                      Delete
                     </button>
                   </td>
                 </tr>
               ))}
+              {!sorted.length && (
+                <tr>
+                  <td colSpan={8} className="muted">
+                    No products yet. Import the KYGS workbook or add items manually.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

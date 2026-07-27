@@ -309,21 +309,39 @@ class StockImportOut(BaseModel):
 # --- Reports ---
 class DashboardOut(BaseModel):
     shop_name: str
+    selected_year: int = 0
+    selected_month: int = 0
     total_products: int
     low_stock_count: int
     out_of_stock_count: int
     inventory_value_cost: float
     inventory_value_retail: float
     sales_today: float
+    sales_week: float = 0
     sales_month: float
     sales_year: float
     profit_month: float
+    profit_year: float = 0
     transactions_today: int
     transactions_month: int
     top_products: list[dict]
+    top_products_month: list[dict] = []
+    top_products_year: list[dict] = []
+    top_profit_month: list[dict] = []
+    top_profit_year: list[dict] = []
     low_stock_items: list[dict]
     recent_sales: list[dict]
     monthly_trend: list[dict]
+
+
+class ProductPerformanceOut(BaseModel):
+    period: str
+    metric: str
+    start_date: date
+    end_date: date
+    year: int
+    month: int
+    items: list[dict]
 
 
 class PeriodReportOut(BaseModel):

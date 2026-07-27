@@ -25,10 +25,11 @@ The original Excel+VBA pattern (seen in open systems like [Sales_Inventory_Track
 - Point-of-sale sales with automatic stock deduction
 - Purchases / stock receiving
 - Manual stock adjustments + full movement history
-- Dashboard KPIs (today / month / year sales, profit, inventory value)
-- Comprehensive reporting: sales by day/month/category/payment, top products, inventory valuation
+- Dashboard KPIs (today / week / month / year), month picker, top movers & profitable-item graphs (by sales / qty / profit)
+- Comprehensive reporting: daily / weekly / monthly / yearly, category charts, product performance
+- Inventory column sorting + soft-delete stock; sales item search + week/month/year history filters
 - **Sales report upload**: preview matches, then import and deduct stock from written sales files
-- Sample motorshop seed data (oils, tires, brakes, filters, labor)
+- Empty DB on first start — import the KYGS workbook / stock CSV, or add products manually (no hard-coded demo sales/inventory)
 - PWA install for Android; Docker image for Proxmox LXC
 
 ## Quick start (development)
