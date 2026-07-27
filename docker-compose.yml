@@ -1,0 +1,16 @@
+services:
+  kygsmoto:
+    build: .
+    container_name: kygsmoto
+    ports:
+      - "8000:8000"
+    volumes:
+      - kygsmoto_data:/app/backend/data
+      - kygsmoto_uploads:/app/backend/uploads
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Manila
+
+volumes:
+  kygsmoto_data:
+  kygsmoto_uploads:

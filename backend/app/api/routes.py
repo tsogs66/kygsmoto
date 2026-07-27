@@ -1,0 +1,445 @@
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from sqlalchemy.orm import Session, joinedload
+
+from app.core.database import get_db
+from app.models.models import (
+    Category,
+    Customer,
+    ImportBatch,
+    Product,
+    Purchase,
+    PurchaseItem,
+    Sale,
+    SaleItem,
+    Supplier,
+)
+from app.schemas import (
+    CategoryCreate,
+    CategoryOut,
+    CustomerCreate,
+    CustomerOut,
+    DashboardOut,
+    ImportBatchOut,
+    ImportPreviewOut,
+    ImportResultOut,
+    InventoryReportOut,
+    PeriodReportOut,
+    ProductCreate,
+    ProductOut,
+    ProductUpdate,
+    PurchaseCreate,
+    PurchaseOut,
+    SaleCreate,
+    SaleOut,
+    StockAdjust,
+    SupplierCreate,
+    SupplierOut,
+)
+from app.services import reports as report_service
+from app.services.import_sales import import_sales_file, preview_sales_file
+from app.services.stock import apply_stock_change, stock_status
+
+router = APIRouter()
+
+
+def _product_out(p: Product) -> ProductOut:
+    return ProductOut(
+        id=p.id,
+        sku=p.sku,
+        name=p.name,
+        brand=p.brand,
+        category_id=p.category_id,
+        supplier_id=p.supplier_id,
+        description=p.description,
+        fitment=p.fitment,
+        unit=p.unit,
+        cost_price=p.cost_price,
+        sell_price=p.sell_price,
+        stock_qty=p.stock_qty,
+        reorder_level=p.reorder_level,
+        location=p.location,
+        barcode=p.barcode,
+        is_active=p.is_active,
+        category_name=p.category.name if p.category else None,
+        supplier_name=p.supplier.name if p.supplier else None,
+        stock_status=stock_status(p),
+    )
+
+
+def _sale_out(s: Sale) -> SaleOut:
+    return SaleOut(
+        id=s.id,
+        invoice_no=s.invoice_no,
+        sale_date=s.sale_date,
+        customer_id=s.customer_id,
+        customer_name=s.customer.name if s.customer else None,
+        payment_method=s.payment_method,
+        payment_status=s.payment_status,
+        amount_paid=s.amount_paid,
+        subtotal=s.subtotal,
+        discount=s.discount,
+        tax=s.tax,
+        total=s.total,
+        notes=s.notes,
+        source=s.source,
+        items=[
+            {
+                "id": i.id,
+                "product_id": i.product_id,
+                "sku": i.sku,
+                "product_name": i.product_name,
+                "quantity": i.quantity,
+                "unit_price": i.unit_price,
+                "cost_price": i.cost_price,
+                "line_total": i.line_total,
+            }
+            for i in s.items
+        ],
+    )
+
+
+def _purchase_out(p: Purchase) -> PurchaseOut:
+    return PurchaseOut(
+        id=p.id,
+        po_no=p.po_no,
+        purchase_date=p.purchase_date,
+        supplier_id=p.supplier_id,
+        supplier_name=p.supplier.name if p.supplier else None,
+        subtotal=p.subtotal,
+        total=p.total,
+        notes=p.notes,
+        items=[
+            {
+                "id": i.id,
+                "product_id": i.product_id,
+                "product_name": i.product.name if i.product else None,
+                "sku": i.product.sku if i.product else None,
+                "quantity": i.quantity,
+                "unit_cost": i.unit_cost,
+                "line_total": i.line_total,
+            }
+            for i in p.items
+        ],
+    )
+
+
+def _next_no(db: Session, model, field: str, prefix: str) -> str:
+    count = db.query(model).count() + 1
+    return f"{prefix}-{1000 + count}"
+
+
+# ---- Masters ----
+@router.get("/categories", response_model=list[CategoryOut])
+def list_categories(db: Session = Depends(get_db)):
+    return db.query(Category).order_by(Category.name).all()
+
+
+@router.post("/categories", response_model=CategoryOut)
+def create_category(payload: CategoryCreate, db: Session = Depends(get_db)):
+    if db.query(Category).filter(Category.name == payload.name).first():
+        raise HTTPException(400, "Category already exists")
+    obj = Category(**payload.model_dump())
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+@router.get("/suppliers", response_model=list[SupplierOut])
+def list_suppliers(db: Session = Depends(get_db)):
+    return db.query(Supplier).order_by(Supplier.name).all()
+
+
+@router.post("/suppliers", response_model=SupplierOut)
+def create_supplier(payload: SupplierCreate, db: Session = Depends(get_db)):
+    obj = Supplier(**payload.model_dump())
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+@router.get("/customers", response_model=list[CustomerOut])
+def list_customers(q: Optional[str] = None, db: Session = Depends(get_db)):
+    query = db.query(Customer)
+    if q:
+        like = f"%{q}%"
+        query = query.filter((Customer.name.ilike(like)) | (Customer.phone.ilike(like)))
+    return query.order_by(Customer.name).all()
+
+
+@router.post("/customers", response_model=CustomerOut)
+def create_customer(payload: CustomerCreate, db: Session = Depends(get_db)):
+    obj = Customer(**payload.model_dump())
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+# ---- Products / Inventory ----
+@router.get("/products", response_model=list[ProductOut])
+def list_products(
+    q: Optional[str] = None,
+    category_id: Optional[int] = None,
+    low_stock: bool = False,
+    db: Session = Depends(get_db),
+):
+    query = db.query(Product).options(joinedload(Product.category), joinedload(Product.supplier))
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            (Product.name.ilike(like))
+            | (Product.sku.ilike(like))
+            | (Product.brand.ilike(like))
+            | (Product.fitment.ilike(like))
+        )
+    if category_id:
+        query = query.filter(Product.category_id == category_id)
+    products = query.order_by(Product.name).all()
+    if low_stock:
+        products = [p for p in products if stock_status(p) in {"low", "out"}]
+    return [_product_out(p) for p in products]
+
+
+@router.post("/products", response_model=ProductOut)
+def create_product(payload: ProductCreate, db: Session = Depends(get_db)):
+    if db.query(Product).filter(Product.sku == payload.sku).first():
+        raise HTTPException(400, "SKU already exists")
+    obj = Product(**payload.model_dump())
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    obj = (
+        db.query(Product)
+        .options(joinedload(Product.category), joinedload(Product.supplier))
+        .get(obj.id)
+    )
+    return _product_out(obj)
+
+
+@router.put("/products/{product_id}", response_model=ProductOut)
+def update_product(product_id: int, payload: ProductUpdate, db: Session = Depends(get_db)):
+    obj = db.query(Product).get(product_id)
+    if not obj:
+        raise HTTPException(404, "Product not found")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
+    db.commit()
+    obj = (
+        db.query(Product)
+        .options(joinedload(Product.category), joinedload(Product.supplier))
+        .get(product_id)
+    )
+    return _product_out(obj)
+
+
+@router.post("/products/{product_id}/adjust", response_model=ProductOut)
+def adjust_stock(product_id: int, payload: StockAdjust, db: Session = Depends(get_db)):
+    obj = db.query(Product).get(product_id)
+    if not obj:
+        raise HTTPException(404, "Product not found")
+    apply_stock_change(db, obj, payload.quantity_change, "adjust", notes=payload.notes)
+    db.commit()
+    obj = (
+        db.query(Product)
+        .options(joinedload(Product.category), joinedload(Product.supplier))
+        .get(product_id)
+    )
+    return _product_out(obj)
+
+
+# ---- Sales ----
+@router.get("/sales", response_model=list[SaleOut])
+def list_sales(limit: int = 100, db: Session = Depends(get_db)):
+    sales = (
+        db.query(Sale)
+        .options(joinedload(Sale.customer), joinedload(Sale.items))
+        .order_by(Sale.sale_date.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_sale_out(s) for s in sales]
+
+
+@router.get("/sales/{sale_id}", response_model=SaleOut)
+def get_sale(sale_id: int, db: Session = Depends(get_db)):
+    sale = (
+        db.query(Sale)
+        .options(joinedload(Sale.customer), joinedload(Sale.items))
+        .get(sale_id)
+    )
+    if not sale:
+        raise HTTPException(404, "Sale not found")
+    return _sale_out(sale)
+
+
+@router.post("/sales", response_model=SaleOut)
+def create_sale(payload: SaleCreate, db: Session = Depends(get_db)):
+    if not payload.items:
+        raise HTTPException(400, "Sale requires at least one item")
+    sale = Sale(
+        invoice_no=_next_no(db, Sale, "invoice_no", "SI"),
+        sale_date=payload.sale_date or datetime.utcnow(),
+        customer_id=payload.customer_id,
+        payment_method=payload.payment_method,
+        payment_status=payload.payment_status,
+        discount=payload.discount,
+        tax=payload.tax,
+        notes=payload.notes,
+        source="manual",
+    )
+    subtotal = 0.0
+    for item in payload.items:
+        product = db.query(Product).get(item.product_id)
+        if not product:
+            raise HTTPException(400, f"Product {item.product_id} not found")
+        unit_price = item.unit_price if item.unit_price is not None else product.sell_price
+        line_total = item.quantity * unit_price
+        subtotal += line_total
+        sale.items.append(
+            SaleItem(
+                product_id=product.id,
+                sku=product.sku,
+                product_name=product.name,
+                quantity=item.quantity,
+                unit_price=unit_price,
+                cost_price=product.cost_price,
+                line_total=line_total,
+            )
+        )
+        if not product.sku.startswith("LABOR"):
+            apply_stock_change(
+                db,
+                product,
+                -item.quantity,
+                "sale",
+                reference=sale.invoice_no,
+            )
+    sale.subtotal = subtotal
+    sale.total = subtotal - payload.discount + payload.tax
+    sale.amount_paid = payload.amount_paid if payload.amount_paid is not None else sale.total
+    db.add(sale)
+    db.commit()
+    sale = (
+        db.query(Sale)
+        .options(joinedload(Sale.customer), joinedload(Sale.items))
+        .get(sale.id)
+    )
+    return _sale_out(sale)
+
+
+# ---- Purchases ----
+@router.get("/purchases", response_model=list[PurchaseOut])
+def list_purchases(db: Session = Depends(get_db)):
+    rows = (
+        db.query(Purchase)
+        .options(joinedload(Purchase.supplier), joinedload(Purchase.items).joinedload(PurchaseItem.product))
+        .order_by(Purchase.purchase_date.desc())
+        .all()
+    )
+    return [_purchase_out(p) for p in rows]
+
+
+@router.post("/purchases", response_model=PurchaseOut)
+def create_purchase(payload: PurchaseCreate, db: Session = Depends(get_db)):
+    if not payload.items:
+        raise HTTPException(400, "Purchase requires items")
+    purchase = Purchase(
+        po_no=_next_no(db, Purchase, "po_no", "PO"),
+        purchase_date=payload.purchase_date or datetime.utcnow(),
+        supplier_id=payload.supplier_id,
+        notes=payload.notes,
+    )
+    subtotal = 0.0
+    for item in payload.items:
+        product = db.query(Product).get(item.product_id)
+        if not product:
+            raise HTTPException(400, f"Product {item.product_id} not found")
+        unit_cost = item.unit_cost if item.unit_cost is not None else product.cost_price
+        line_total = item.quantity * unit_cost
+        subtotal += line_total
+        purchase.items.append(
+            PurchaseItem(
+                product_id=product.id,
+                quantity=item.quantity,
+                unit_cost=unit_cost,
+                line_total=line_total,
+            )
+        )
+        product.cost_price = unit_cost
+        apply_stock_change(db, product, item.quantity, "purchase", reference=purchase.po_no)
+    purchase.subtotal = subtotal
+    purchase.total = subtotal
+    db.add(purchase)
+    db.commit()
+    purchase = (
+        db.query(Purchase)
+        .options(joinedload(Purchase.supplier), joinedload(Purchase.items).joinedload(PurchaseItem.product))
+        .get(purchase.id)
+    )
+    return _purchase_out(purchase)
+
+
+# ---- Reports ----
+@router.get("/reports/dashboard", response_model=DashboardOut)
+def get_dashboard(db: Session = Depends(get_db)):
+    return report_service.dashboard(db)
+
+
+@router.get("/reports/sales", response_model=PeriodReportOut)
+def get_sales_report(
+    period: str = Query("monthly", pattern="^(daily|monthly|yearly)$"),
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    return report_service.period_report(db, period, year, month)
+
+
+@router.get("/reports/inventory", response_model=InventoryReportOut)
+def get_inventory_report(db: Session = Depends(get_db)):
+    return report_service.inventory_report(db)
+
+
+# ---- Sales file import / stock sync ----
+@router.post("/imports/sales/preview", response_model=ImportPreviewOut)
+async def preview_import(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    content = await file.read()
+    try:
+        return preview_sales_file(db, file.filename or "upload.csv", content)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/imports/sales", response_model=ImportResultOut)
+async def run_import(
+    file: UploadFile = File(...),
+    deduct_stock: bool = Form(True),
+    skip_processed: bool = Form(True),
+    db: Session = Depends(get_db),
+):
+    content = await file.read()
+    # persist upload
+    from app.core.config import settings
+
+    dest = settings.upload_dir / f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{file.filename}"
+    dest.write_bytes(content)
+    try:
+        return import_sales_file(
+            db,
+            file.filename or dest.name,
+            content,
+            deduct_stock=deduct_stock,
+            skip_processed=skip_processed,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/imports", response_model=list[ImportBatchOut])
+def list_imports(db: Session = Depends(get_db)):
+    return db.query(ImportBatch).order_by(ImportBatch.created_at.desc()).limit(50).all()

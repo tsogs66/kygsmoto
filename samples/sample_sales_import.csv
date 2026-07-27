@@ -1,0 +1,9 @@
+invoice_no,date,sku,product,qty,unit_price,customer,processed
+SI-IMP-001,2026-07-20,MOT-7100-1L,Motul 7100 4T 10W-40 1L,2,650,Juan Dela Cruz,No
+SI-IMP-001,2026-07-20,LABOR-CCO,Change Oil Labor,1,100,Juan Dela Cruz,No
+SI-IMP-002,2026-07-21,TIRE-70-90-17,IRC Tire 70/90-17 Front,1,1100,Maria Santos,No
+SI-IMP-002,2026-07-21,TIRE-80-90-17,IRC Tire 80/90-17 Rear,1,1200,Maria Santos,No
+SI-IMP-003,2026-07-22,SPK-CR7HIX,NGK Spark Plug CR7HIX,4,280,Pedro Reyes,No
+SI-IMP-003,2026-07-22,AIR-FILTER-CLICK,Air Filter Honda Click 125i,1,160,Pedro Reyes,No
+SI-IMP-004,2026-07-23,BAT-GTZ5S,Battery GTZ5S MF,1,1350,Ana Lopez,No
+SI-IMP-005,2026-07-24,UNKNOWN-SKU,Mystery Part X,2,99,Walk-in,No

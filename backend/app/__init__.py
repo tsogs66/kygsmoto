@@ -1,0 +1,1 @@
+"""KYGSMOTO Sales & Inventory Management API."""

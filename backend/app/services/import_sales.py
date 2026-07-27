@@ -1,0 +1,426 @@
+"""Parse sales report files (CSV/XLSX) and sync inventory stock from sold quantities.
+
+Compatible with common Excel VBA sales export layouts such as:
+- Order_ID, Date, Product, Qty, Unit_Price, Customer, Total_Amount, Processed
+- Invoice/SKU/Product/Qty/Price style motorshop sales sheets
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import re
+from collections import defaultdict
+from datetime import datetime, date
+from typing import Any, Optional
+
+import pandas as pd
+from sqlalchemy.orm import Session
+
+from app.models.models import (
+    Customer,
+    ImportBatch,
+    Product,
+    Sale,
+    SaleItem,
+)
+from app.services.stock import apply_stock_change
+
+
+HEADER_ALIASES = {
+    "invoice_no": [
+        "invoice_no", "invoice", "invoice#", "invoice_number", "order_id", "order id",
+        "sale_id", "receipt", "receipt_no", "or_no", "si_no", "inv",
+    ],
+    "sale_date": [
+        "sale_date", "date", "order_date", "transaction_date", "sales_date", "datetime",
+    ],
+    "sku": [
+        "sku", "item_id", "item id", "product_code", "product_no", "product no",
+        "part_no", "part number", "code", "barcode", "item_code",
+    ],
+    "product_name": [
+        "product", "product_name", "item", "item_name", "description", "part_name",
+        "product name",
+    ],
+    "quantity": [
+        "qty", "quantity", "qty_sold", "sold_qty", "units", "pcs",
+    ],
+    "unit_price": [
+        "unit_price", "price", "rate", "sell_price", "sales_price", "unit price", "mrp",
+    ],
+    "customer": [
+        "customer", "customer_name", "client", "buyer", "name",
+    ],
+    "total": [
+        "total", "total_amount", "line_total", "amount", "sales_amount",
+    ],
+    "processed": [
+        "processed", "status", "imported", "done",
+    ],
+}
+
+
+def _norm(value: Any) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
+
+
+def _map_columns(columns: list[str]) -> dict[str, str]:
+    normalized = {_norm(c): c for c in columns}
+    mapping: dict[str, str] = {}
+    for canonical, aliases in HEADER_ALIASES.items():
+        for alias in aliases:
+            key = _norm(alias)
+            if key in normalized:
+                mapping[canonical] = normalized[key]
+                break
+    return mapping
+
+
+def _parse_date(value: Any) -> Optional[datetime]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    if isinstance(value, (int, float)):
+        # Excel serial date
+        try:
+            return pd.to_datetime(float(value), unit="D", origin="1899-12-30").to_pydatetime()
+        except Exception:
+            pass
+    try:
+        return pd.to_datetime(str(value), dayfirst=False).to_pydatetime()
+    except Exception:
+        return None
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", "").replace("₱", "").replace("P", "")
+    try:
+        return float(text)
+    except ValueError:
+        return default
+
+
+def read_sales_dataframe(filename: str, content: bytes) -> pd.DataFrame:
+    lower = filename.lower()
+    buffer = io.BytesIO(content)
+    if lower.endswith((".xlsx", ".xlsm", ".xls")):
+        df = pd.read_excel(buffer)
+    elif lower.endswith(".csv"):
+        for enc in ("utf-8-sig", "utf-8", "latin-1"):
+            try:
+                buffer.seek(0)
+                df = pd.read_csv(buffer, encoding=enc)
+                break
+            except Exception:
+                df = None
+        if df is None:
+            raise ValueError("Unable to read CSV file")
+    else:
+        raise ValueError("Unsupported file type. Upload CSV or Excel (.xlsx/.xlsm)")
+    df = df.dropna(how="all")
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def find_product(db: Session, sku: Optional[str], product_name: Optional[str]) -> Optional[Product]:
+    if sku:
+        product = db.query(Product).filter(Product.sku == str(sku).strip()).first()
+        if product:
+            return product
+        product = db.query(Product).filter(Product.barcode == str(sku).strip()).first()
+        if product:
+            return product
+    if product_name:
+        name = str(product_name).strip()
+        product = db.query(Product).filter(Product.name.ilike(name)).first()
+        if product:
+            return product
+        product = (
+            db.query(Product)
+            .filter(Product.name.ilike(f"%{name}%"))
+            .order_by(Product.id.asc())
+            .first()
+        )
+        if product:
+            return product
+    return None
+
+
+def preview_sales_file(db: Session, filename: str, content: bytes) -> dict:
+    df = read_sales_dataframe(filename, content)
+    mapping = _map_columns(list(df.columns))
+    if "quantity" not in mapping or ("sku" not in mapping and "product_name" not in mapping):
+        raise ValueError(
+            "Could not detect required columns. Need Quantity plus SKU or Product name. "
+            f"Found columns: {list(df.columns)}"
+        )
+
+    rows = []
+    matched = unmatched = 0
+    total_qty = 0.0
+    for idx, record in df.iterrows():
+        row_number = int(idx) + 2  # header is row 1
+        sku = str(record[mapping["sku"]]).strip() if "sku" in mapping else None
+        if sku in ("", "nan", "None"):
+            sku = None
+        product_name = str(record[mapping["product_name"]]).strip() if "product_name" in mapping else None
+        if product_name in ("", "nan", "None"):
+            product_name = None
+        qty = _to_float(record[mapping["quantity"]], 0)
+        unit_price = _to_float(record[mapping["unit_price"]], 0) if "unit_price" in mapping else None
+        invoice_no = str(record[mapping["invoice_no"]]).strip() if "invoice_no" in mapping else None
+        sale_date = _parse_date(record[mapping["sale_date"]]) if "sale_date" in mapping else None
+        customer = str(record[mapping["customer"]]).strip() if "customer" in mapping else None
+
+        if "processed" in mapping:
+            processed = str(record[mapping["processed"]]).strip().lower()
+            if processed in {"yes", "y", "true", "1", "processed", "done"}:
+                rows.append({
+                    "row_number": row_number,
+                    "invoice_no": invoice_no,
+                    "sale_date": sale_date.isoformat() if sale_date else None,
+                    "sku": sku,
+                    "product_name": product_name,
+                    "quantity": qty,
+                    "unit_price": unit_price,
+                    "customer": customer,
+                    "matched_product_id": None,
+                    "matched_product_name": None,
+                    "current_stock": None,
+                    "status": "skipped",
+                    "message": "Already marked Processed in file",
+                })
+                continue
+
+        if qty <= 0:
+            rows.append({
+                "row_number": row_number,
+                "invoice_no": invoice_no,
+                "sale_date": sale_date.isoformat() if sale_date else None,
+                "sku": sku,
+                "product_name": product_name,
+                "quantity": qty,
+                "unit_price": unit_price,
+                "customer": customer,
+                "matched_product_id": None,
+                "matched_product_name": None,
+                "current_stock": None,
+                "status": "error",
+                "message": "Invalid quantity",
+            })
+            unmatched += 1
+            continue
+
+        product = find_product(db, sku, product_name)
+        if not product:
+            unmatched += 1
+            rows.append({
+                "row_number": row_number,
+                "invoice_no": invoice_no,
+                "sale_date": sale_date.isoformat() if sale_date else None,
+                "sku": sku,
+                "product_name": product_name,
+                "quantity": qty,
+                "unit_price": unit_price,
+                "customer": customer,
+                "matched_product_id": None,
+                "matched_product_name": None,
+                "current_stock": None,
+                "status": "unmatched",
+                "message": "No matching product in inventory",
+            })
+            continue
+
+        matched += 1
+        total_qty += qty
+        rows.append({
+            "row_number": row_number,
+            "invoice_no": invoice_no,
+            "sale_date": sale_date.isoformat() if sale_date else None,
+            "sku": sku or product.sku,
+            "product_name": product_name or product.name,
+            "quantity": qty,
+            "unit_price": unit_price if unit_price is not None else product.sell_price,
+            "customer": customer,
+            "matched_product_id": product.id,
+            "matched_product_name": product.name,
+            "current_stock": product.stock_qty,
+            "status": "matched",
+            "message": f"Will deduct {qty} from stock ({product.stock_qty})",
+        })
+
+    return {
+        "filename": filename,
+        "rows": rows,
+        "matched_count": matched,
+        "unmatched_count": unmatched,
+        "total_qty": total_qty,
+    }
+
+
+def import_sales_file(
+    db: Session,
+    filename: str,
+    content: bytes,
+    deduct_stock: bool = True,
+    skip_processed: bool = True,
+) -> dict:
+    df = read_sales_dataframe(filename, content)
+    mapping = _map_columns(list(df.columns))
+    if "quantity" not in mapping or ("sku" not in mapping and "product_name" not in mapping):
+        raise ValueError(
+            "Could not detect required columns. Need Quantity plus SKU or Product name. "
+            f"Found columns: {list(df.columns)}"
+        )
+
+    batch = ImportBatch(
+        filename=filename,
+        file_type=filename.rsplit(".", 1)[-1].lower(),
+        status="processing",
+        rows_total=len(df),
+    )
+    db.add(batch)
+    db.flush()
+
+    # Group line items by invoice so one sale can have many products
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    unmatched: list[str] = []
+    skipped = 0
+    imported_rows = 0
+    stock_deducted = 0.0
+
+    for idx, record in df.iterrows():
+        sku = str(record[mapping["sku"]]).strip() if "sku" in mapping else None
+        if sku in ("", "nan", "None"):
+            sku = None
+        product_name = str(record[mapping["product_name"]]).strip() if "product_name" in mapping else None
+        if product_name in ("", "nan", "None"):
+            product_name = None
+        qty = _to_float(record[mapping["quantity"]], 0)
+        unit_price = _to_float(record[mapping["unit_price"]], 0) if "unit_price" in mapping else None
+        invoice_no = str(record[mapping["invoice_no"]]).strip() if "invoice_no" in mapping else None
+        sale_date = _parse_date(record[mapping["sale_date"]]) if "sale_date" in mapping else datetime.utcnow()
+        customer_name = str(record[mapping["customer"]]).strip() if "customer" in mapping else None
+
+        if skip_processed and "processed" in mapping:
+            processed = str(record[mapping["processed"]]).strip().lower()
+            if processed in {"yes", "y", "true", "1", "processed", "done"}:
+                skipped += 1
+                continue
+
+        if qty <= 0:
+            skipped += 1
+            continue
+
+        product = find_product(db, sku, product_name)
+        if not product:
+            label = sku or product_name or f"row-{idx}"
+            unmatched.append(str(label))
+            skipped += 1
+            continue
+
+        key = invoice_no or f"IMP-{batch.id}-{idx}"
+        grouped[key].append({
+            "product": product,
+            "qty": qty,
+            "unit_price": unit_price if unit_price not in (None, 0) else product.sell_price,
+            "sale_date": sale_date or datetime.utcnow(),
+            "customer_name": customer_name,
+            "invoice_no": invoice_no,
+        })
+        imported_rows += 1
+
+    sales_created = 0
+    for invoice_key, lines in grouped.items():
+        existing = db.query(Sale).filter(Sale.invoice_no == invoice_key).first()
+        if existing:
+            # Append as unique imported invoice to avoid duplicates
+            invoice_key = f"{invoice_key}-IMP{batch.id}-{sales_created + 1}"
+
+        customer_id = None
+        customer_name = lines[0].get("customer_name")
+        if customer_name and customer_name not in ("", "nan", "None"):
+            customer = db.query(Customer).filter(Customer.name.ilike(customer_name)).first()
+            if not customer:
+                customer = Customer(name=customer_name)
+                db.add(customer)
+                db.flush()
+            customer_id = customer.id
+
+        sale = Sale(
+            invoice_no=invoice_key,
+            sale_date=lines[0]["sale_date"],
+            customer_id=customer_id,
+            payment_method="cash",
+            payment_status="paid",
+            source="import",
+            import_batch_id=batch.id,
+            notes=f"Imported from {filename}",
+        )
+        subtotal = 0.0
+        for line in lines:
+            product: Product = line["product"]
+            qty = float(line["qty"])
+            unit_price = float(line["unit_price"])
+            line_total = qty * unit_price
+            subtotal += line_total
+            sale.items.append(
+                SaleItem(
+                    product_id=product.id,
+                    sku=product.sku,
+                    product_name=product.name,
+                    quantity=qty,
+                    unit_price=unit_price,
+                    cost_price=product.cost_price,
+                    line_total=line_total,
+                )
+            )
+            if deduct_stock:
+                apply_stock_change(
+                    db,
+                    product,
+                    -qty,
+                    movement_type="import",
+                    reference=invoice_key,
+                    notes=f"Stock deducted from sales file import ({filename})",
+                )
+                stock_deducted += qty
+        sale.subtotal = subtotal
+        sale.total = subtotal
+        sale.amount_paid = subtotal
+        db.add(sale)
+        sales_created += 1
+
+    batch.rows_imported = imported_rows
+    batch.rows_skipped = skipped
+    batch.stock_deducted = stock_deducted
+    batch.unmatched_skus = json.dumps(sorted(set(unmatched)))
+    batch.summary = (
+        f"Created {sales_created} sales; imported {imported_rows} lines; "
+        f"skipped {skipped}; deducted {stock_deducted} units from stock"
+    )
+    batch.status = "completed"
+    db.commit()
+    db.refresh(batch)
+
+    return {
+        "batch_id": batch.id,
+        "filename": filename,
+        "rows_total": batch.rows_total,
+        "rows_imported": batch.rows_imported,
+        "rows_skipped": batch.rows_skipped,
+        "stock_deducted": batch.stock_deducted,
+        "unmatched_skus": sorted(set(unmatched)),
+        "sales_created": sales_created,
+        "message": batch.summary,
+    }
