@@ -37,10 +37,13 @@ from app.schemas import (
     StockAdjust,
     SupplierCreate,
     SupplierOut,
+    WorkbookImportOut,
 )
 from app.services import reports as report_service
 from app.services.import_sales import import_sales_file, preview_sales_file
+from app.services.kygs_import import import_kygs_workbook
 from app.services.stock import apply_stock_change, stock_status
+from pathlib import Path
 
 router = APIRouter()
 
@@ -443,3 +446,50 @@ async def run_import(
 @router.get("/imports", response_model=list[ImportBatchOut])
 def list_imports(db: Session = Depends(get_db)):
     return db.query(ImportBatch).order_by(ImportBatch.created_at.desc()).limit(50).all()
+
+@router.post("/imports/workbook", response_model=WorkbookImportOut)
+async def import_workbook(
+    file: UploadFile = File(...),
+    replace_existing: bool = Form(True),
+    db: Session = Depends(get_db),
+):
+    """Import full KYGS .xlsm workbook (INVENTORY + SALES + INFOSHEET + CRITICAL + DELISTED)."""
+    from app.core.config import settings
+
+    content = await file.read()
+    filename = file.filename or "kygs.xlsm"
+    if not filename.lower().endswith((".xlsm", ".xlsx", ".xls")):
+        raise HTTPException(400, "Upload a KYGS Excel workbook (.xlsm/.xlsx)")
+
+    dest = settings.upload_dir / f"workbook_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{filename}"
+    dest.write_bytes(content)
+    try:
+        return import_kygs_workbook(db, dest, replace_existing=replace_existing)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/imports/workbook/local", response_model=WorkbookImportOut)
+def import_workbook_local(
+    path: str = Form("KYGS APRIL 2025.xlsm"),
+    replace_existing: bool = Form(True),
+    db: Session = Depends(get_db),
+):
+    """Import workbook from a local path (repo root or absolute)."""
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        repo_root = Path(__file__).resolve().parents[3]
+        for base in (repo_root, Path.cwd(), Path("/workspace")):
+            trial = base / path
+            if trial.exists():
+                candidate = trial
+                break
+    if not candidate.exists():
+        raise HTTPException(404, f"Workbook not found: {path}")
+    try:
+        return import_kygs_workbook(db, candidate, replace_existing=replace_existing)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+

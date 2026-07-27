@@ -258,6 +258,20 @@ class ImportBatchOut(ORMModel):
     created_at: datetime
 
 
+class WorkbookImportOut(BaseModel):
+    filename: str
+    products_created: int
+    services_created: int
+    delisted_count: int
+    categories: int
+    suppliers: int
+    sales_created: int
+    sale_lines: int
+    unmatched_skus: list[str] = []
+    batch_id: int
+    message: str
+
+
 # --- Reports ---
 class DashboardOut(BaseModel):
     shop_name: str

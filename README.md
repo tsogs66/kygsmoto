@@ -81,23 +81,47 @@ See [deploy/ANDROID.md](deploy/ANDROID.md) — open the server URL in Chrome and
 
 Upload a CSV or Excel sales export under **Sales File Import**.
 
-Supported column aliases (auto-detected):
+### KYGS workbook (full shop load)
 
-- Invoice / Order_ID / Receipt  
-- Date / Sale_Date  
-- SKU / Item_ID / Part_No / Barcode  
-- Product / Item / Description  
-- Qty / Quantity  
-- Unit_Price / Price / Rate  
-- Customer  
-- Processed (optional — rows marked Yes are skipped, matching classic VBA behavior)
+The repo includes `KYGS APRIL 2025.xlsm` (KYGS Motorcycle Parts & Accessories).
 
-Sample file: [`samples/sample_sales_import.csv`](samples/sample_sales_import.csv)
+```bash
+# CLI
+source .venv/bin/activate
+python backend/scripts/import_kygs.py "KYGS APRIL 2025.xlsm"
 
-Flow:
+# or API / UI: Sales File Import → "Import KYGS APRIL 2025.xlsm from server"
+```
 
-1. Preview → see matched vs unmatched SKUs and current stock  
-2. Import & Deduct Stock → creates sales + stock movements  
+What gets imported:
+
+| Sheet | Mapped to |
+| --- | --- |
+| INVENTORY | Products (ending stock, cost, retail) |
+| SALES | Historical sales (stock **not** re-deducted) |
+| INFOSHEET | Categories, suppliers, service/labor SKUs |
+| CRITICAL | Reorder levels + critical flags |
+| DELISTED | Inactive products |
+
+### Incremental sales exports
+
+Supported column aliases (auto-detected), including KYGS `SALES` layout:
+
+- `DATE` / Sale_Date  
+- `ITEM CODE` / SKU / Part_No  
+- `ITEM DESCRIPTION` / Product  
+- `QTY` / Quantity  
+- `PRICE` / Unit_Price  
+- `DISCNT` / Discount (optional)  
+- `TOTAL`  
+- Invoice / Processed (optional)
+
+Sample files:
+
+- [`samples/kygs_sales_export.csv`](samples/kygs_sales_export.csv) — extracted from the workbook SALES sheet  
+- [`samples/sample_sales_import.csv`](samples/sample_sales_import.csv) — generic demo  
+
+When uploading a full `.xlsm`, the importer prefers the **SALES** sheet automatically.
 
 ## API overview
 

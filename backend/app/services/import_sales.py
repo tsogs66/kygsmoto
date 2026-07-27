@@ -36,27 +36,33 @@ HEADER_ALIASES = {
         "sale_date", "date", "order_date", "transaction_date", "sales_date", "datetime",
     ],
     "sku": [
-        "sku", "item_id", "item id", "product_code", "product_no", "product no",
-        "part_no", "part number", "code", "barcode", "item_code",
+        # KYGS VBA workbook uses ITEM CODE
+        "item_code", "item code", "sku", "item_id", "item id", "product_code",
+        "product_no", "product no", "part_no", "part number", "code", "barcode",
     ],
     "product_name": [
-        "product", "product_name", "item", "item_name", "description", "part_name",
-        "product name",
+        # KYGS VBA workbook uses ITEM DESCRIPTION
+        "item_description", "item description", "product", "product_name", "item",
+        "item_name", "description", "part_name", "product name",
     ],
     "quantity": [
-        "qty", "quantity", "qty_sold", "sold_qty", "units", "pcs",
+        "qty", "quantity", "qty_sold", "sold_qty", "units", "pcs", "sales_quantity",
     ],
     "unit_price": [
         "unit_price", "price", "rate", "sell_price", "sales_price", "unit price", "mrp",
+        "retail_price",
+    ],
+    "discount": [
+        "discount", "discnt", "disc", "sales_discount",
     ],
     "customer": [
-        "customer", "customer_name", "client", "buyer", "name",
+        "customer", "customer_name", "client", "buyer",
     ],
     "total": [
-        "total", "total_amount", "line_total", "amount", "sales_amount",
+        "total", "total_amount", "line_total", "amount", "sales_amount", "ealant",
     ],
     "processed": [
-        "processed", "status", "imported", "done",
+        "processed", "imported", "done",
     ],
 }
 
@@ -110,12 +116,63 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _pick_sales_sheet(excel: pd.ExcelFile) -> str:
+    """Prefer KYGS 'SALES' sheet; else first sheet whose headers look like sales."""
+    names = list(excel.sheet_names)
+    for preferred in ("SALES", "Sales", "sales", "sales recipt", "Sales_Data"):
+        if preferred in names:
+            return preferred
+    for name in names:
+        preview = excel.parse(name, nrows=5)
+        cols = {_norm(c) for c in preview.columns}
+        if ({"item_code", "sku", "product"} & cols) and ({"qty", "quantity"} & cols):
+            return name
+        # KYGS sometimes has junk in row1; try header=1
+        preview2 = excel.parse(name, header=1, nrows=5)
+        cols2 = {_norm(c) for c in preview2.columns}
+        if ({"item_code", "date"} & cols2) and ({"qty", "quantity"} & cols2):
+            return name
+    return names[0]
+
+
+def _normalize_kygs_sales_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """If first row is not headers (KYGS SALES has totals in row 1), promote real header."""
+    cols = [_norm(c) for c in df.columns]
+    looks_like_header = ("date" in cols or "item_code" in cols) and (
+        "qty" in cols or "quantity" in cols
+    )
+    if looks_like_header:
+        return df
+
+    # Scan first few rows for DATE / ITEM CODE header row
+    for i in range(min(5, len(df))):
+        values = [_norm(v) for v in df.iloc[i].tolist()]
+        if "date" in values and ("item_code" in values or "sku" in values) and "qty" in values:
+            new_cols = [str(v).strip() if v is not None and str(v) != "nan" else f"col_{j}" for j, v in enumerate(df.iloc[i].tolist())]
+            body = df.iloc[i + 1 :].copy()
+            body.columns = new_cols
+            return body.reset_index(drop=True)
+    return df
+
+
 def read_sales_dataframe(filename: str, content: bytes) -> pd.DataFrame:
     lower = filename.lower()
     buffer = io.BytesIO(content)
     if lower.endswith((".xlsx", ".xlsm", ".xls")):
-        df = pd.read_excel(buffer)
+        excel = pd.ExcelFile(buffer)
+        sheet = _pick_sales_sheet(excel)
+        df = excel.parse(sheet)
+        df = _normalize_kygs_sales_frame(df)
+        # KYGS SALES: if still wrong, force header row 1 (0-index) after totals row
+        cols = [_norm(c) for c in df.columns]
+        if not (("item_code" in cols or "sku" in cols) and ("qty" in cols or "quantity" in cols)):
+            df2 = excel.parse(sheet, header=1)
+            df2 = _normalize_kygs_sales_frame(df2)
+            cols2 = [_norm(c) for c in df2.columns]
+            if ("item_code" in cols2 or "sku" in cols2) and ("qty" in cols2 or "quantity" in cols2):
+                df = df2
     elif lower.endswith(".csv"):
+        df = None
         for enc in ("utf-8-sig", "utf-8", "latin-1"):
             try:
                 buffer.seek(0)
@@ -125,6 +182,7 @@ def read_sales_dataframe(filename: str, content: bytes) -> pd.DataFrame:
                 df = None
         if df is None:
             raise ValueError("Unable to read CSV file")
+        df = _normalize_kygs_sales_frame(df)
     else:
         raise ValueError("Unsupported file type. Upload CSV or Excel (.xlsx/.xlsm)")
     df = df.dropna(how="all")
@@ -329,7 +387,12 @@ def import_sales_file(
             skipped += 1
             continue
 
-        key = invoice_no or f"IMP-{batch.id}-{idx}"
+        # KYGS SALES has no invoice column — group by calendar day
+        if invoice_no and invoice_no not in ("", "nan", "None"):
+            key = invoice_no
+        else:
+            day = (sale_date or datetime.utcnow()).strftime("%Y-%m-%d")
+            key = f"KYGS-{day.replace('-', '')}"
         grouped[key].append({
             "product": product,
             "qty": qty,

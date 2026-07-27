@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
-import type { ImportBatch, ImportPreview, ImportResult } from '../api'
+import type { ImportBatch, ImportPreview, ImportResult, WorkbookImportResult } from '../api'
 
 export default function ImportPage() {
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<ImportPreview | null>(null)
   const [result, setResult] = useState<ImportResult | null>(null)
+  const [workbookResult, setWorkbookResult] = useState<WorkbookImportResult | null>(null)
   const [history, setHistory] = useState<ImportBatch[]>([])
   const [drag, setDrag] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [deductStock, setDeductStock] = useState(true)
 
   const loadHistory = () => api.imports().then(setHistory).catch((e) => setError(e.message))
 
@@ -17,12 +19,19 @@ export default function ImportPage() {
     loadHistory()
   }, [])
 
+  const isWorkbook = (f: File) => /\.xlsm?$/i.test(f.name) || /\.xls$/i.test(f.name)
+
   const onFile = async (f: File | null) => {
     setFile(f)
     setPreview(null)
     setResult(null)
+    setWorkbookResult(null)
     setError('')
     if (!f) return
+    // Full KYGS workbook → use workbook importer (not sales-only preview)
+    if (/april|kygs|inventory/i.test(f.name) && isWorkbook(f)) {
+      return
+    }
     setBusy(true)
     try {
       const p = await api.previewImport(f)
@@ -34,16 +43,47 @@ export default function ImportPage() {
     }
   }
 
-  const runImport = async () => {
+  const runSalesImport = async () => {
     if (!file) return
     setBusy(true)
     setError('')
     try {
-      const r = await api.runImport(file, true)
+      const r = await api.runImport(file, deductStock)
       setResult(r)
       loadHistory()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const runWorkbookUpload = async () => {
+    if (!file) return
+    setBusy(true)
+    setError('')
+    setWorkbookResult(null)
+    try {
+      const r = await api.importWorkbook(file, true)
+      setWorkbookResult(r)
+      loadHistory()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Workbook import failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const runLocalWorkbook = async () => {
+    setBusy(true)
+    setError('')
+    setWorkbookResult(null)
+    try {
+      const r = await api.importWorkbookLocal('KYGS APRIL 2025.xlsm', true)
+      setWorkbookResult(r)
+      loadHistory()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Local workbook import failed')
     } finally {
       setBusy(false)
     }
@@ -55,8 +95,8 @@ export default function ImportPage() {
         <div>
           <h1>Sales File Import</h1>
           <p>
-            Upload CSV/Excel sales reports — the system matches SKUs/products and deducts sold quantities from
-            inventory stock.
+            Tuned for KYGS workbook columns (<code>DATE · ITEM CODE · ITEM DESCRIPTION · QTY · PRICE · DISCNT · TOTAL</code>).
+            Full <strong>KYGS APRIL 2025.xlsm</strong> import loads inventory, services, critical levels, delisted items, and sales history.
           </p>
         </div>
       </div>
@@ -67,6 +107,47 @@ export default function ImportPage() {
           {result.message}. Unmatched: {result.unmatched_skus.join(', ') || 'none'}
         </div>
       )}
+      {workbookResult && (
+        <div className="success-banner">
+          {workbookResult.message}
+          <div style={{ marginTop: '0.35rem' }}>
+            Products {workbookResult.products_created} · Services {workbookResult.services_created} · Delisted{' '}
+            {workbookResult.delisted_count} · Sales invoices {workbookResult.sales_created} (
+            {workbookResult.sale_lines} lines)
+          </div>
+        </div>
+      )}
+
+      <div className="panel" style={{ marginBottom: '1rem' }}>
+        <h2>Full KYGS Workbook</h2>
+        <p className="muted">
+          Imports INVENTORY ending stocks (no double-deduction), SALES history, INFOSHEET services/categories/suppliers,
+          CRITICAL reorder margins, and DELISTED products. Replaces current demo/seed data.
+        </p>
+        <div className="toolbar">
+          <button className="btn" disabled={busy} onClick={runLocalWorkbook}>
+            {busy ? 'Importing…' : 'Import KYGS APRIL 2025.xlsm from server'}
+          </button>
+          <label className="btn secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+            Upload .xlsm
+            <input
+              type="file"
+              accept=".xlsm,.xlsx,.xls"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0] || null
+                setFile(f)
+                setPreview(null)
+              }}
+            />
+          </label>
+          {file && isWorkbook(file) && (
+            <button className="btn" disabled={busy} onClick={runWorkbookUpload}>
+              Import uploaded workbook
+            </button>
+          )}
+        </div>
+      </div>
 
       <div
         className={`dropzone ${drag ? 'drag' : ''}`}
@@ -83,9 +164,11 @@ export default function ImportPage() {
         }}
       >
         <p style={{ marginTop: 0, fontFamily: 'Oswald, sans-serif', fontSize: '1.3rem', letterSpacing: '0.04em' }}>
-          DROP SALES REPORT HERE
+          DROP SALES REPORT / CSV HERE
         </p>
-        <p className="muted">Accepts .csv / .xlsx / .xlsm — columns like Invoice, Date, SKU, Product, Qty, Price</p>
+        <p className="muted">
+          Accepts KYGS SALES sheet exports (.csv / .xlsx / .xlsm). Auto-selects the SALES sheet inside workbooks.
+        </p>
         <input
           type="file"
           accept=".csv,.xlsx,.xlsm,.xls"
@@ -99,12 +182,16 @@ export default function ImportPage() {
             <div>
               <h2 style={{ marginBottom: '0.3rem' }}>Preview — {preview.filename}</h2>
               <p className="muted" style={{ margin: 0 }}>
-                Matched {preview.matched_count} · Unmatched {preview.unmatched_count} · Qty to deduct{' '}
+                Matched {preview.matched_count} · Unmatched {preview.unmatched_count} · Qty{' '}
                 {preview.total_qty}
               </p>
+              <label style={{ display: 'inline-flex', gap: '0.45rem', marginTop: '0.6rem', alignItems: 'center' }}>
+                <input type="checkbox" checked={deductStock} onChange={(e) => setDeductStock(e.target.checked)} />
+                Deduct stock on import (turn off if stocks already reflect these sales)
+              </label>
             </div>
-            <button className="btn" disabled={busy || preview.matched_count === 0} onClick={runImport}>
-              {busy ? 'Working…' : 'Import & Deduct Stock'}
+            <button className="btn" disabled={busy || preview.matched_count === 0} onClick={runSalesImport}>
+              {busy ? 'Working…' : deductStock ? 'Import & Deduct Stock' : 'Import Sales Only'}
             </button>
           </div>
           <div className="table-wrap" style={{ marginTop: '1rem' }}>
@@ -174,7 +261,7 @@ export default function ImportPage() {
               {!history.length && (
                 <tr>
                   <td colSpan={6} className="muted">
-                    No imports yet. Try samples/sample_sales_import.csv
+                    No imports yet.
                   </td>
                 </tr>
               )}

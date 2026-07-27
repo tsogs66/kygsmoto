@@ -73,6 +73,18 @@ export const api = {
     return request<ImportResult>('/imports/sales', { method: 'POST', body: fd })
   },
   imports: () => request<ImportBatch[]>('/imports'),
+  importWorkbook: async (file: File, replaceExisting = true) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('replace_existing', String(replaceExisting))
+    return request<WorkbookImportResult>('/imports/workbook', { method: 'POST', body: fd })
+  },
+  importWorkbookLocal: async (path = 'KYGS APRIL 2025.xlsm', replaceExisting = true) => {
+    const fd = new FormData()
+    fd.append('path', path)
+    fd.append('replace_existing', String(replaceExisting))
+    return request<WorkbookImportResult>('/imports/workbook/local', { method: 'POST', body: fd })
+  },
 }
 
 export type Product = {
@@ -279,6 +291,20 @@ export type ImportBatch = {
   unmatched_skus?: string
   summary?: string
   created_at: string
+}
+
+export type WorkbookImportResult = {
+  filename: string
+  products_created: number
+  services_created: number
+  delisted_count: number
+  categories: number
+  suppliers: number
+  sales_created: number
+  sale_lines: number
+  unmatched_skus: string[]
+  batch_id: number
+  message: string
 }
 
 export function peso(n: number | undefined | null) {
