@@ -177,12 +177,35 @@ docker compose exec kygsmoto ls /app
 
 ---
 
-## 7. Useful maintenance commands
+## 7. Autoupdate from GitHub
+
+Pull latest code and rebuild containers:
+
+```bash
+cd ~/kygsmoto
+chmod +x deploy/autoupdate.sh
+./deploy/autoupdate.sh --branch cursor/kygsmoto-sales-inventory-9004
+# after merge to main:
+# ./deploy/autoupdate.sh --branch main
+```
+
+Daily cron (03:00):
+
+```bash
+crontab -e
+# add:
+0 3 * * * /root/kygsmoto/deploy/autoupdate.sh --branch cursor/kygsmoto-sales-inventory-9004 >> /var/log/kygsmoto-autoupdate.log 2>&1
+```
+
+---
+
+## 8. Useful maintenance commands
 
 ```bash
 # inside LXC, in ~/kygsmoto
 docker compose pull          # if using published images later
 docker compose up -d --build # rebuild after git pull
+./deploy/autoupdate.sh       # pull + rebuild in one step
 docker compose down          # stop
 docker compose logs -f       # follow logs
 
@@ -195,7 +218,7 @@ pct enter 210
 
 ---
 
-## 8. Full copy-paste bootstrap (create already done)
+## 9. Full copy-paste bootstrap (create already done)
 
 If CT `210` already exists and you are inside it (`pct enter 210`):
 
@@ -227,4 +250,4 @@ apt update && apt install -y docker.io git curl \
 | Docker fails in unprivileged CT | `pct set 210 --features nesting=1,keyctl=1` then reboot |
 | Browser can’t connect | Check `docker compose ps`, firewall, and that you use the **LXC** IP not the PVE host IP |
 
-Also see: [ANDROID.md](ANDROID.md) · [windows-start.bat](windows-start.bat) · [lxc-install.sh](lxc-install.sh) (non-Docker Python install)
+Also see: [ANDROID.md](ANDROID.md) · [windows-start.bat](windows-start.bat) · [autoupdate.sh](autoupdate.sh) · [lxc-install.sh](lxc-install.sh)

@@ -38,9 +38,12 @@ from app.schemas import (
     SupplierCreate,
     SupplierOut,
     WorkbookImportOut,
+    StockPreviewOut,
+    StockImportOut,
 )
 from app.services import reports as report_service
 from app.services.import_sales import import_sales_file, preview_sales_file
+from app.services.import_stock import import_stock_file, preview_stock_file
 from app.services.kygs_import import import_kygs_workbook
 from app.services.stock import apply_stock_change, stock_status
 from pathlib import Path
@@ -490,6 +493,43 @@ def import_workbook_local(
         raise HTTPException(404, f"Workbook not found: {path}")
     try:
         return import_kygs_workbook(db, candidate, replace_existing=replace_existing)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+@router.post("/imports/stock/preview", response_model=StockPreviewOut)
+async def preview_stock_import(
+    file: UploadFile = File(...),
+    mode: str = Form("set"),
+    db: Session = Depends(get_db),
+):
+    """Preview CSV/Excel stock file (set / adjust / upsert)."""
+    content = await file.read()
+    try:
+        return preview_stock_file(db, file.filename or "stock.csv", content, mode=mode)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/imports/stock", response_model=StockImportOut)
+async def run_stock_import(
+    file: UploadFile = File(...),
+    mode: str = Form("set"),
+    db: Session = Depends(get_db),
+):
+    """Upload CSV/Excel to manage stock levels.
+
+    Modes:
+    - set: absolute ENDING STOCKS / QTY
+    - adjust: add/subtract qty (or ADJUST column)
+    - upsert: set stock and create missing SKUs
+    """
+    from app.core.config import settings
+
+    content = await file.read()
+    dest = settings.upload_dir / f"stock_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{file.filename}"
+    dest.write_bytes(content)
+    try:
+        return import_stock_file(db, file.filename or dest.name, content, mode=mode)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

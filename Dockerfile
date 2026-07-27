@@ -20,8 +20,11 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 COPY backend/ ./backend/
 COPY --from=frontend-build /app/frontend/dist ./backend/static
 COPY samples ./samples
+COPY ["KYGS APRIL 2025.xlsm", "./KYGS APRIL 2025.xlsm"]
+COPY deploy ./deploy
 
-RUN mkdir -p /app/backend/data /app/backend/uploads
+RUN mkdir -p /app/backend/data /app/backend/uploads \
+ && chmod +x /app/deploy/*.sh || true
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -f http://127.0.0.1:8000/api/health || exit 1

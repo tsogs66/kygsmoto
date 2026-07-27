@@ -85,6 +85,18 @@ export const api = {
     fd.append('replace_existing', String(replaceExisting))
     return request<WorkbookImportResult>('/imports/workbook/local', { method: 'POST', body: fd })
   },
+  previewStockImport: async (file: File, mode: 'set' | 'adjust' | 'upsert' = 'set') => {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('mode', mode)
+    return request<StockPreview>('/imports/stock/preview', { method: 'POST', body: fd })
+  },
+  runStockImport: async (file: File, mode: 'set' | 'adjust' | 'upsert' = 'set') => {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('mode', mode)
+    return request<StockImportResult>('/imports/stock', { method: 'POST', body: fd })
+  },
 }
 
 export type Product = {
@@ -304,6 +316,38 @@ export type WorkbookImportResult = {
   sale_lines: number
   unmatched_skus: string[]
   batch_id: number
+  message: string
+}
+
+export type StockPreview = {
+  filename: string
+  mode: string
+  rows: {
+    row_number: number
+    sku?: string
+    product_name?: string
+    csv_stock?: number
+    csv_adjust?: number
+    current_stock?: number
+    new_stock?: number
+    status: string
+    message?: string
+  }[]
+  matched_count: number
+  unmatched_count: number
+  will_create_count: number
+}
+
+export type StockImportResult = {
+  batch_id: number
+  filename: string
+  mode: string
+  rows_total: number
+  rows_updated: number
+  rows_created: number
+  rows_skipped: number
+  unmatched_skus: string[]
+  net_qty_change: number
   message: string
 }
 

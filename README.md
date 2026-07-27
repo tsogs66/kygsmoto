@@ -83,9 +83,15 @@ apt update && apt install -y docker.io git curl \
   && echo "Open http://$(hostname -I | awk '{print $1}'):8000"
 ```
 
+**Autoupdate later:**
+
+```bash
+cd ~/kygsmoto && ./deploy/autoupdate.sh --branch cursor/kygsmoto-sales-inventory-9004
+```
+
 - **Web app:** `http://<lxc-ip>:8000` — **no app login** (auth not implemented yet)  
 - **Console `kygsmoto login:`:** Linux root only — set with `pct exec 210 -- passwd` on the PVE host  
-- Helper script: [`deploy/create-lxc.sh`](deploy/create-lxc.sh)
+- Helper scripts: [`deploy/create-lxc.sh`](deploy/create-lxc.sh) · [`deploy/autoupdate.sh`](deploy/autoupdate.sh)
 
 Or without Docker (Python build inside the CT):
 
@@ -147,10 +153,30 @@ Supported column aliases (auto-detected), including KYGS `SALES` layout:
 
 Sample files:
 
-- [`samples/kygs_sales_export.csv`](samples/kygs_sales_export.csv) — extracted from the workbook SALES sheet  
+- [`samples/kygs_current_inventory.csv`](samples/kygs_current_inventory.csv) — **current inventory** extracted from the workbook (~1,867 SKUs)  
+- [`samples/kygs_sales_export.csv`](samples/kygs_sales_export.csv) — **sales lines** extracted from the SALES sheet  
+- [`samples/kygs_stock_upload_template.csv`](samples/kygs_stock_upload_template.csv) — small stock-upload template  
 - [`samples/sample_sales_import.csv`](samples/sample_sales_import.csv) — generic demo  
 
-When uploading a full `.xlsm`, the importer prefers the **SALES** sheet automatically.
+Re-extract anytime:
+
+```bash
+python backend/scripts/extract_kygs_csv.py "KYGS APRIL 2025.xlsm" samples
+```
+
+### Stock CSV upload
+
+UI: **Import / Stock Upload** → Stock CSV section.
+
+| Mode | Behavior |
+| --- | --- |
+| `set` | Absolute stock from `ENDING STOCKS` / `QTY` |
+| `adjust` | Add/subtract using `ADJUST` (or qty as delta) |
+| `upsert` | Like `set`, and create missing SKUs |
+
+API: `POST /api/imports/stock/preview` and `POST /api/imports/stock` (`mode=set|adjust|upsert`).
+
+When uploading a full `.xlsm` for sales, the importer prefers the **SALES** sheet automatically.
 
 ## API overview
 

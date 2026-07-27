@@ -1,12 +1,25 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
-import type { ImportBatch, ImportPreview, ImportResult, WorkbookImportResult } from '../api'
+import type {
+  ImportBatch,
+  ImportPreview,
+  ImportResult,
+  StockImportResult,
+  StockPreview,
+  WorkbookImportResult,
+} from '../api'
+
+type StockMode = 'set' | 'adjust' | 'upsert'
 
 export default function ImportPage() {
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<ImportPreview | null>(null)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [workbookResult, setWorkbookResult] = useState<WorkbookImportResult | null>(null)
+  const [stockFile, setStockFile] = useState<File | null>(null)
+  const [stockMode, setStockMode] = useState<StockMode>('set')
+  const [stockPreview, setStockPreview] = useState<StockPreview | null>(null)
+  const [stockResult, setStockResult] = useState<StockImportResult | null>(null)
   const [history, setHistory] = useState<ImportBatch[]>([])
   const [drag, setDrag] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -28,7 +41,6 @@ export default function ImportPage() {
     setWorkbookResult(null)
     setError('')
     if (!f) return
-    // Full KYGS workbook → use workbook importer (not sales-only preview)
     if (/april|kygs|inventory/i.test(f.name) && isWorkbook(f)) {
       return
     }
@@ -38,6 +50,23 @@ export default function ImportPage() {
       setPreview(p)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Preview failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onStockFile = async (f: File | null, mode: StockMode = stockMode) => {
+    setStockFile(f)
+    setStockPreview(null)
+    setStockResult(null)
+    setError('')
+    if (!f) return
+    setBusy(true)
+    try {
+      const p = await api.previewStockImport(f, mode)
+      setStockPreview(p)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Stock preview failed')
     } finally {
       setBusy(false)
     }
@@ -89,14 +118,29 @@ export default function ImportPage() {
     }
   }
 
+  const runStockImport = async () => {
+    if (!stockFile) return
+    setBusy(true)
+    setError('')
+    try {
+      const r = await api.runStockImport(stockFile, stockMode)
+      setStockResult(r)
+      loadHistory()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Stock import failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div>
       <div className="page-header">
         <div>
-          <h1>Sales File Import</h1>
+          <h1>Import / Stock Upload</h1>
           <p>
-            Tuned for KYGS workbook columns (<code>DATE · ITEM CODE · ITEM DESCRIPTION · QTY · PRICE · DISCNT · TOTAL</code>).
-            Full <strong>KYGS APRIL 2025.xlsm</strong> import loads inventory, services, critical levels, delisted items, and sales history.
+            Upload sales reports, stock CSVs, or the full KYGS workbook. Extracted samples live in{' '}
+            <code>samples/kygs_current_inventory.csv</code> and <code>samples/kygs_sales_export.csv</code>.
           </p>
         </div>
       </div>
@@ -117,6 +161,91 @@ export default function ImportPage() {
           </div>
         </div>
       )}
+      {stockResult && (
+        <div className="success-banner">
+          {stockResult.message}. Net qty change {stockResult.net_qty_change}. Unmatched:{' '}
+          {stockResult.unmatched_skus.join(', ') || 'none'}
+        </div>
+      )}
+
+      <div className="panel" style={{ marginBottom: '1rem' }}>
+        <h2>Stock CSV Upload</h2>
+        <p className="muted">
+          Manage inventory from CSV/Excel. Columns: <code>ITEM CODE</code>, <code>ENDING STOCKS</code> (or{' '}
+          <code>QTY</code>), optional DESCRIPTION / UNIT PRICE / RETAIL PRICE / CATEGORY / SUPPLIER / ADJUST.
+          Sample: <code>samples/kygs_stock_upload_template.csv</code> or full{' '}
+          <code>samples/kygs_current_inventory.csv</code>.
+        </p>
+        <div className="toolbar">
+          {(['set', 'adjust', 'upsert'] as StockMode[]).map((m) => (
+            <button
+              key={m}
+              className={`btn ${stockMode === m ? '' : 'secondary'}`}
+              type="button"
+              onClick={() => {
+                setStockMode(m)
+                if (stockFile) onStockFile(stockFile, m)
+              }}
+            >
+              {m === 'set' ? 'Set stock' : m === 'adjust' ? 'Adjust (+/−)' : 'Upsert (create missing)'}
+            </button>
+          ))}
+          <input
+            type="file"
+            accept=".csv,.xlsx,.xlsm,.xls"
+            onChange={(e) => onStockFile(e.target.files?.[0] || null)}
+          />
+          <button
+            className="btn"
+            disabled={busy || !stockPreview || (stockPreview.matched_count === 0 && stockMode !== 'upsert')}
+            onClick={runStockImport}
+          >
+            {busy ? 'Working…' : 'Apply stock file'}
+          </button>
+        </div>
+        {stockPreview && (
+          <div className="table-wrap" style={{ marginTop: '0.8rem' }}>
+            <p className="muted">
+              Mode <strong>{stockPreview.mode}</strong> · matched {stockPreview.matched_count} · unmatched{' '}
+              {stockPreview.unmatched_count} · will create {stockPreview.will_create_count}
+            </p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Row</th>
+                  <th>SKU</th>
+                  <th>Product</th>
+                  <th>Current</th>
+                  <th>New</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stockPreview.rows.slice(0, 100).map((r) => (
+                  <tr key={r.row_number}>
+                    <td>{r.row_number}</td>
+                    <td>{r.sku}</td>
+                    <td>{r.product_name || '—'}</td>
+                    <td>{r.current_stock ?? '—'}</td>
+                    <td>{r.new_stock ?? '—'}</td>
+                    <td>
+                      <span className={`badge ${r.status === 'matched' ? 'matched' : r.status === 'will_create' ? 'warn' : 'unmatched'}`}>
+                        {r.status}
+                      </span>
+                      <div className="muted" style={{ fontSize: '0.78rem' }}>
+                        {r.message}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {stockPreview.rows.length > 100 && (
+              <p className="muted">Showing first 100 of {stockPreview.rows.length} rows</p>
+            )}
+          </div>
+        )}
+      </div>
 
       <div className="panel" style={{ marginBottom: '1rem' }}>
         <h2>Full KYGS Workbook</h2>
@@ -168,6 +297,7 @@ export default function ImportPage() {
         </p>
         <p className="muted">
           Accepts KYGS SALES sheet exports (.csv / .xlsx / .xlsm). Auto-selects the SALES sheet inside workbooks.
+          Sample: <code>samples/kygs_sales_export.csv</code>
         </p>
         <input
           type="file"
@@ -182,8 +312,7 @@ export default function ImportPage() {
             <div>
               <h2 style={{ marginBottom: '0.3rem' }}>Preview — {preview.filename}</h2>
               <p className="muted" style={{ margin: 0 }}>
-                Matched {preview.matched_count} · Unmatched {preview.unmatched_count} · Qty{' '}
-                {preview.total_qty}
+                Matched {preview.matched_count} · Unmatched {preview.unmatched_count} · Qty {preview.total_qty}
               </p>
               <label style={{ display: 'inline-flex', gap: '0.45rem', marginTop: '0.6rem', alignItems: 'center' }}>
                 <input type="checkbox" checked={deductStock} onChange={(e) => setDeductStock(e.target.checked)} />

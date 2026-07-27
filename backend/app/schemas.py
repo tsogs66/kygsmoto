@@ -272,6 +272,40 @@ class WorkbookImportOut(BaseModel):
     message: str
 
 
+class StockPreviewRow(BaseModel):
+    row_number: int
+    sku: Optional[str] = None
+    product_name: Optional[str] = None
+    csv_stock: Optional[float] = None
+    csv_adjust: Optional[float] = None
+    current_stock: Optional[float] = None
+    new_stock: Optional[float] = None
+    status: str
+    message: Optional[str] = None
+
+
+class StockPreviewOut(BaseModel):
+    filename: str
+    mode: str
+    rows: list[StockPreviewRow]
+    matched_count: int
+    unmatched_count: int
+    will_create_count: int = 0
+
+
+class StockImportOut(BaseModel):
+    batch_id: int
+    filename: str
+    mode: str
+    rows_total: int
+    rows_updated: int
+    rows_created: int
+    rows_skipped: int
+    unmatched_skus: list[str] = []
+    net_qty_change: float
+    message: str
+
+
 # --- Reports ---
 class DashboardOut(BaseModel):
     shop_name: str
