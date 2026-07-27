@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { api, peso } from '../api'
 import type { OcrEditableRow, OcrPreview, Product, Purchase, Supplier } from '../api'
 import { useSortableRows } from '../hooks/useSortableRows'
+import ProductSearchSelect from '../components/ProductSearchSelect'
 
 function localDateTimeValue(d = new Date()) {
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -448,23 +449,15 @@ export default function PurchasesPage() {
                           onChange={(e) => updateOcrRow(idx, { product_name: e.target.value })}
                         />
                       </td>
-                      <td style={{ minWidth: 200 }}>
-                        <select
-                          value={row.matched_product_id || ''}
-                          onChange={(e) => selectProduct(idx, Number(e.target.value))}
-                        >
-                          <option value="">Select inventory item…</option>
-                          {(row.suggestions || []).map((s) => (
-                            <option key={`sug-${s.id}`} value={s.id}>
-                              ★ {s.sku} — {s.name} (cost {peso(s.cost_price || 0)})
-                            </option>
-                          ))}
-                          {products.slice(0, 400).map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.sku} — {p.name}
-                            </option>
-                          ))}
-                        </select>
+                      <td style={{ minWidth: 220 }}>
+                        <ProductSearchSelect
+                          products={products}
+                          suggestions={row.suggestions || []}
+                          value={row.matched_product_id}
+                          selectedLabel={row.matched_product_name}
+                          mode="purchase"
+                          onSelect={(id) => selectProduct(idx, id)}
+                        />
                       </td>
                       <td>
                         <input

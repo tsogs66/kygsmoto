@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, peso } from '../api'
+import { api } from '../api'
 import type {
   ImportBatch,
   ImportPreview,
@@ -11,6 +11,7 @@ import type {
   StockPreview,
   WorkbookImportResult,
 } from '../api'
+import ProductSearchSelect from '../components/ProductSearchSelect'
 
 type StockMode = 'set' | 'adjust' | 'upsert'
 
@@ -137,17 +138,41 @@ export default function ImportPage() {
   }
 
   const addBlankOcrRow = () => {
-    setOcrRows((prev) => [
-      ...prev,
-      {
-        row_number: (prev[prev.length - 1]?.row_number || 0) + 1,
-        quantity: 1,
-        include: true,
-        status: 'blank',
-        sale_date: prev.find((r) => r.sale_date)?.sale_date || '',
-        message: 'Manual line',
-      },
-    ])
+    setOcrRows((prev) => {
+      const lastDate = [...prev].reverse().find((r) => r.sale_date)?.sale_date || ''
+      return [
+        ...prev,
+        {
+          row_number: (prev[prev.length - 1]?.row_number || 0) + 1,
+          quantity: 1,
+          include: true,
+          status: 'blank',
+          sale_date: lastDate,
+          message: 'Manual line',
+        },
+      ]
+    })
+  }
+
+  const applyDateToEmpty = (date: string) => {
+    if (!date) return
+    setOcrRows((prev) =>
+      prev.map((r) => (r.sale_date ? r : { ...r, sale_date: date })),
+    )
+  }
+
+  const fillMissingDatesFromAbove = () => {
+    setOcrRows((prev) => {
+      let last = ''
+      return prev.map((r) => {
+        const d = r.sale_date ? String(r.sale_date).slice(0, 10) : ''
+        if (d) {
+          last = d
+          return r
+        }
+        return last ? { ...r, sale_date: last } : r
+      })
+    })
   }
 
   const runnableOcrCount = useMemo(
@@ -295,10 +320,33 @@ export default function ImportPage() {
           <button className="btn secondary" type="button" onClick={addBlankOcrRow} disabled={!ocrRows.length && !ocrPreview}>
             Add blank line
           </button>
+          <button
+            className="btn secondary"
+            type="button"
+            onClick={fillMissingDatesFromAbove}
+            disabled={!ocrRows.length}
+            title="Fill blank row dates from the nearest date above"
+          >
+            Fill missing dates
+          </button>
           <button className="btn" disabled={busy || runnableOcrCount === 0} onClick={runOcrConfirm}>
             {busy ? 'Working…' : `Confirm ${runnableOcrCount} line(s)`}
           </button>
         </div>
+        {ocrRows.length > 0 && (
+          <p className="muted" style={{ marginTop: '0.4rem' }}>
+            Each line has its own sale date — multi-day sheets create separate sales per day.
+            Unique dates:{' '}
+            {Array.from(new Set(ocrRows.map((r) => (r.sale_date ? String(r.sale_date).slice(0, 10) : '')).filter(Boolean))).join(', ') ||
+              'none yet'}
+            . Quick set empty rows:{' '}
+            <input
+              type="date"
+              onChange={(e) => applyDateToEmpty(e.target.value)}
+              style={{ marginLeft: 4 }}
+            />
+          </p>
+        )}
 
         {(photoUrl || ocrPreview) && (
           <div className="grid grid-2" style={{ marginTop: '1rem' }}>
@@ -377,7 +425,22 @@ export default function ImportPage() {
                         <input
                           value={row.product_name || ''}
                           placeholder="Item text"
-                          onChange={(e) => updateOcrRow(idx, { product_name: e.target.value })}
+                          onChange={(e) => {
+                            updateOcrRow(idx, { product_name: e.target.value })
+                          }}
+                          onBlur={async (e) => {
+                            const label = e.target.value.trim()
+                            if (!label || ocrRows[idx]?.matched_product_id) return
+                            try {
+                              const sug = await api.productSuggestions(label)
+                              updateOcrRow(idx, { suggestions: sug })
+                              if (sug[0] && sug[0].score >= 70) {
+                                selectProduct(idx, sug[0].id)
+                              }
+                            } catch {
+                              /* ignore */
+                            }
+                          }}
                         />
                         {row.message && (
                           <div className="muted" style={{ fontSize: '0.72rem' }}>
@@ -385,23 +448,15 @@ export default function ImportPage() {
                           </div>
                         )}
                       </td>
-                      <td style={{ minWidth: 200 }}>
-                        <select
-                          value={row.matched_product_id || ''}
-                          onChange={(e) => selectProduct(idx, Number(e.target.value))}
-                        >
-                          <option value="">Select inventory item…</option>
-                          {(row.suggestions || []).map((s) => (
-                            <option key={`sug-${s.id}`} value={s.id}>
-                              ★ {s.sku} — {s.name} ({peso(s.sell_price)})
-                            </option>
-                          ))}
-                          {products.slice(0, 400).map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.sku} — {p.name}
-                            </option>
-                          ))}
-                        </select>
+                      <td style={{ minWidth: 220 }}>
+                        <ProductSearchSelect
+                          products={products}
+                          suggestions={row.suggestions || []}
+                          value={row.matched_product_id}
+                          selectedLabel={row.matched_product_name}
+                          mode="sale"
+                          onSelect={(id) => selectProduct(idx, id)}
+                        />
                         {row.matched_product_name && (
                           <div className="muted" style={{ fontSize: '0.72rem' }}>
                             {row.matched_product_name}

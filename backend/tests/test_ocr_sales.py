@@ -69,6 +69,24 @@ def test_parse_ocr_lines_basic():
     assert any(r["quantity"] == 4 for r in rows)
 
 
+def test_parse_ocr_multi_date_context():
+    text = """
+    04/10/2025
+    TEST-OIL-1L Motul Oil 1 650
+    04/12/2025
+    TEST-SPARK-1 Spark Plug 2 280
+    04/12/2025 Motul Oil x1 650
+    """
+    rows = parse_ocr_lines(text)
+    assert len(rows) >= 3
+    dates = [r["sale_date"] for r in rows]
+    assert "2025-04-10" in dates
+    assert "2025-04-12" in dates
+    # First item follows first date header
+    assert rows[0]["sale_date"] == "2025-04-10"
+    assert rows[1]["sale_date"] == "2025-04-12"
+
+
 def test_sale_date_override(client):
     products = client.get("/api/products").json()
     product = next(p for p in products if p["sku"] == "TEST-SPARK-1")
@@ -83,6 +101,45 @@ def test_sale_date_override(client):
     assert r.status_code == 200
     body = r.json()
     assert body["sale_date"].startswith("2025-04-10")
+
+
+def test_inventory_fuzzy_match(client):
+    from app.core.database import SessionLocal
+    from app.services.ocr_sales import match_ocr_rows
+
+    db = SessionLocal()
+    try:
+        rows = match_ocr_rows(
+            db,
+            [
+                {
+                    "row_number": 1,
+                    "sale_date": "2025-04-10",
+                    "sku": None,
+                    "product_name": "Test Motul Oil",
+                    "quantity": 1,
+                    "unit_price": None,
+                    "ocr_text": "Test Motul Oil 1 650",
+                },
+                {
+                    "row_number": 2,
+                    "sale_date": "2025-04-11",
+                    "sku": "TEST-SPARK-1",
+                    "product_name": "spark",
+                    "quantity": 2,
+                    "unit_price": None,
+                    "ocr_text": "TEST-SPARK-1 spark 2",
+                },
+            ],
+            mode="sale",
+        )
+        matched = [r for r in rows if r["status"] == "matched"]
+        assert len(matched) >= 2
+        assert matched[0]["sale_date"] == "2025-04-10"
+        assert matched[1]["sale_date"] == "2025-04-11"
+        assert matched[0]["suggestions"]
+    finally:
+        db.close()
 
 
 def test_confirm_rows_import(client):
