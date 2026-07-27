@@ -33,6 +33,18 @@ export default function PurchasesPage() {
   const [busy, setBusy] = useState(false)
   const [showRaw, setShowRaw] = useState(false)
 
+  const [editing, setEditing] = useState<Purchase | null>(null)
+  const [editSupplierId, setEditSupplierId] = useState('')
+  const [editDate, setEditDate] = useState('')
+  const [editNotes, setEditNotes] = useState('')
+  const [editLines, setEditLines] = useState<
+    { id?: number; product_id: number; product?: Product; quantity: number; unit_cost: number }[]
+  >([])
+  const [editProductId, setEditProductId] = useState('')
+  const [editQty, setEditQty] = useState('1')
+  const [editCost, setEditCost] = useState('')
+  const [receiptBusy, setReceiptBusy] = useState(false)
+
   const load = () => {
     Promise.all([api.products(), api.suppliers(), api.purchases()])
       .then(([p, s, pu]) => {
@@ -74,6 +86,96 @@ export default function PurchasesPage() {
     [purchases],
   )
   const { sorted, toggle, indicator } = useSortableRows(purchaseRows, 'purchase_date', 'desc')
+
+  const openEdit = (p: Purchase) => {
+    setEditing(p)
+    setEditSupplierId(p.supplier_id ? String(p.supplier_id) : '')
+    const d = new Date(p.purchase_date)
+    setEditDate(localDateTimeValue(d))
+    setEditNotes(p.notes || '')
+    setEditLines(
+      (p.items || []).map((i) => ({
+        id: i.id,
+        product_id: i.product_id,
+        product: products.find((x) => x.id === i.product_id),
+        quantity: i.quantity,
+        unit_cost: i.unit_cost,
+      })),
+    )
+    setError('')
+    setOk('')
+  }
+
+  const addEditLine = () => {
+    const product = products.find((p) => p.id === Number(editProductId))
+    if (!product) return
+    const quantity = Number(editQty)
+    if (!quantity || quantity <= 0) return
+    const cost = editCost ? Number(editCost) : product.cost_price
+    setEditLines((prev) => [...prev, { product_id: product.id, product, quantity, unit_cost: cost }])
+    setEditProductId('')
+    setEditQty('1')
+    setEditCost('')
+  }
+
+  const saveEdit = async () => {
+    if (!editing) return
+    if (!editLines.length) {
+      setError('Purchase needs at least one item')
+      return
+    }
+    setBusy(true)
+    setError('')
+    setOk('')
+    try {
+      const updated = await api.updatePurchase(editing.id, {
+        supplier_id: editSupplierId ? Number(editSupplierId) : null,
+        purchase_date: editDate ? new Date(editDate).toISOString() : null,
+        notes: editNotes || undefined,
+        items: editLines.map((l) => ({
+          id: l.id,
+          product_id: l.product_id,
+          quantity: l.quantity,
+          unit_cost: l.unit_cost,
+        })),
+      })
+      setOk(`Updated ${updated.po_no}`)
+      setEditing(updated)
+      setEditLines(
+        (updated.items || []).map((i) => ({
+          id: i.id,
+          product_id: i.product_id,
+          product: products.find((x) => x.id === i.product_id),
+          quantity: i.quantity,
+          unit_cost: i.unit_cost,
+        })),
+      )
+      load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Update failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onReceiptUpload = async (purchaseId: number, file: File | null) => {
+    if (!file) return
+    setReceiptBusy(true)
+    setError('')
+    try {
+      const r = await api.uploadPurchaseReceipt(purchaseId, file)
+      setOk(r.message)
+      if (editing?.id === purchaseId) {
+        const fresh = await api.getPurchase(purchaseId)
+        setEditing(fresh)
+      }
+      load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Receipt upload failed')
+    } finally {
+      setReceiptBusy(false)
+    }
+  }
 
   const addLine = () => {
     const product = products.find((p) => p.id === Number(productId))
@@ -338,6 +440,8 @@ export default function PurchasesPage() {
                   <th style={{ cursor: 'pointer' }} onClick={() => toggle('total')}>
                     Total{indicator('total')}
                   </th>
+                  <th>Receipt</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -347,11 +451,36 @@ export default function PurchasesPage() {
                     <td>{p.supplier_label}</td>
                     <td>{new Date(p.purchase_date).toLocaleString()}</td>
                     <td>{peso(p.total)}</td>
+                    <td>
+                      {p.has_receipt ? (
+                        <a href={api.purchaseReceiptUrl(p.id)} target="_blank" rel="noreferrer">
+                          {p.receipt_filename || 'View'}
+                        </a>
+                      ) : (
+                        <span className="muted">None</span>
+                      )}
+                      <div style={{ marginTop: 4 }}>
+                        <label className="btn secondary" style={{ display: 'inline-block', fontSize: '0.75rem', padding: '0.2rem 0.45rem' }}>
+                          {receiptBusy ? '…' : 'Upload'}
+                          <input
+                            type="file"
+                            accept="image/*,.pdf,application/pdf"
+                            hidden
+                            onChange={(e) => onReceiptUpload(p.id, e.target.files?.[0] || null)}
+                          />
+                        </label>
+                      </div>
+                    </td>
+                    <td>
+                      <button type="button" className="btn secondary" onClick={() => openEdit(p)}>
+                        Edit
+                      </button>
+                    </td>
                   </tr>
                 ))}
                 {!sorted.length && (
                   <tr>
-                    <td colSpan={4} className="muted">
+                    <td colSpan={6} className="muted">
                       No purchases yet.
                     </td>
                   </tr>
@@ -361,6 +490,192 @@ export default function PurchasesPage() {
           </div>
         </div>
       </div>
+
+      {editing && (
+        <div className="panel" style={{ marginTop: '1rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+            <h2 style={{ margin: 0 }}>Edit {editing.po_no}</h2>
+            <button type="button" className="btn secondary" onClick={() => setEditing(null)}>
+              Close
+            </button>
+          </div>
+          <p className="muted">Change items, qty, cost, or date. Stock adjusts by the quantity difference.</p>
+          <div className="form-grid">
+            <label>
+              Supplier
+              <select value={editSupplierId} onChange={(e) => setEditSupplierId(e.target.value)}>
+                <option value="">None</option>
+                {suppliers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Purchase date / time
+              <input type="datetime-local" value={editDate} onChange={(e) => setEditDate(e.target.value)} />
+            </label>
+            <label className="full">
+              Notes
+              <input value={editNotes} onChange={(e) => setEditNotes(e.target.value)} />
+            </label>
+          </div>
+
+          <div className="table-wrap" style={{ marginTop: '0.8rem' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Qty</th>
+                  <th>Unit cost</th>
+                  <th>Line</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {editLines.map((l, idx) => (
+                  <tr key={`${l.id || 'n'}-${l.product_id}-${idx}`}>
+                    <td>
+                      {l.product?.sku || products.find((p) => p.id === l.product_id)?.sku || l.product_id}
+                      <div className="muted">
+                        {l.product?.name ||
+                          products.find((p) => p.id === l.product_id)?.name ||
+                          editing.items.find((i) => i.product_id === l.product_id)?.product_name}
+                      </div>
+                    </td>
+                    <td>
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="1"
+                        value={l.quantity}
+                        onChange={(e) =>
+                          setEditLines((prev) =>
+                            prev.map((row, i) =>
+                              i === idx ? { ...row, quantity: Number(e.target.value) } : row,
+                            ),
+                          )
+                        }
+                        style={{ width: 80 }}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={l.unit_cost}
+                        onChange={(e) =>
+                          setEditLines((prev) =>
+                            prev.map((row, i) =>
+                              i === idx ? { ...row, unit_cost: Number(e.target.value) } : row,
+                            ),
+                          )
+                        }
+                        style={{ width: 100 }}
+                      />
+                    </td>
+                    <td>{peso(l.quantity * l.unit_cost)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn secondary"
+                        onClick={() => setEditLines((prev) => prev.filter((_, i) => i !== idx))}
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="toolbar" style={{ marginTop: '0.8rem' }}>
+            <ProductSearchSelect
+              products={products}
+              value={editProductId ? Number(editProductId) : null}
+              mode="purchase"
+              onSelect={(id) => {
+                setEditProductId(String(id))
+                const p = products.find((x) => x.id === id)
+                if (p) setEditCost(String(p.cost_price))
+              }}
+            />
+            <input
+              type="number"
+              value={editQty}
+              onChange={(e) => setEditQty(e.target.value)}
+              style={{ width: 70 }}
+              placeholder="Qty"
+            />
+            <input
+              type="number"
+              value={editCost}
+              onChange={(e) => setEditCost(e.target.value)}
+              style={{ width: 90 }}
+              placeholder="Cost"
+            />
+            <button type="button" className="btn secondary" onClick={addEditLine}>
+              Add item
+            </button>
+            <button type="button" className="btn" disabled={busy} onClick={saveEdit}>
+              {busy ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+
+          <div style={{ marginTop: '1rem', paddingTop: '0.8rem', borderTop: '1px solid #e5e0d6' }}>
+            <h2 style={{ marginTop: 0 }}>Receipt for this entry</h2>
+            <p className="muted">Upload a photo or PDF of the supplier receipt for {editing.po_no}.</p>
+            <div className="toolbar">
+              <label className="btn secondary">
+                {receiptBusy ? 'Uploading…' : 'Upload receipt'}
+                <input
+                  type="file"
+                  accept="image/*,.pdf,application/pdf"
+                  hidden
+                  onChange={(e) => onReceiptUpload(editing.id, e.target.files?.[0] || null)}
+                />
+              </label>
+              {editing.has_receipt && (
+                <>
+                  <a className="btn" href={api.purchaseReceiptUrl(editing.id)} target="_blank" rel="noreferrer">
+                    View {editing.receipt_filename || 'receipt'}
+                  </a>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    onClick={async () => {
+                      await api.deletePurchaseReceipt(editing.id)
+                      const fresh = await api.getPurchase(editing.id)
+                      setEditing(fresh)
+                      load()
+                      setOk('Receipt removed')
+                    }}
+                  >
+                    Remove receipt
+                  </button>
+                </>
+              )}
+            </div>
+            {editing.has_receipt && /\.(jpg|jpeg|png|webp|gif)$/i.test(editing.receipt_filename || '') && (
+              <img
+                src={api.purchaseReceiptUrl(editing.id)}
+                alt="Receipt"
+                style={{
+                  marginTop: '0.75rem',
+                  maxWidth: '100%',
+                  maxHeight: 360,
+                  objectFit: 'contain',
+                  borderRadius: 8,
+                  background: '#111',
+                }}
+              />
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="panel" style={{ marginTop: '1rem' }}>
         <h2>Scan handwritten purchase / delivery report</h2>

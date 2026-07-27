@@ -173,12 +173,20 @@ class SaleOut(ORMModel):
 
 # --- Purchases ---
 class PurchaseItemIn(BaseModel):
+    id: Optional[int] = None  # existing line id when editing
     product_id: int
     quantity: float = Field(gt=0)
     unit_cost: Optional[float] = None
 
 
 class PurchaseCreate(BaseModel):
+    supplier_id: Optional[int] = None
+    notes: Optional[str] = None
+    purchase_date: Optional[datetime] = None
+    items: list[PurchaseItemIn]
+
+
+class PurchaseUpdate(BaseModel):
     supplier_id: Optional[int] = None
     notes: Optional[str] = None
     purchase_date: Optional[datetime] = None
@@ -204,6 +212,8 @@ class PurchaseOut(ORMModel):
     subtotal: float
     total: float
     notes: Optional[str] = None
+    has_receipt: bool = False
+    receipt_filename: Optional[str] = None
     items: list[PurchaseItemOut] = []
 
 

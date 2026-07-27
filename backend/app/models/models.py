@@ -137,6 +137,8 @@ class Purchase(Base):
     subtotal: Mapped[float] = mapped_column(Float, default=0.0)
     total: Mapped[float] = mapped_column(Float, default=0.0)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    receipt_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    receipt_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     supplier: Mapped[Optional[Supplier]] = relationship(back_populates="purchases")

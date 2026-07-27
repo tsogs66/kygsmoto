@@ -72,12 +72,30 @@ export const api = {
       body: JSON.stringify(body),
     }),
   purchases: () => request<Purchase[]>('/purchases'),
+  getPurchase: (id: number) => request<Purchase>(`/purchases/${id}`),
   createPurchase: (body: PurchaseCreate) =>
     request<Purchase>('/purchases', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+  updatePurchase: (id: number, body: PurchaseUpdate) =>
+    request<Purchase>(`/purchases/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  uploadPurchaseReceipt: async (id: number, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<{ ok: boolean; receipt_filename: string; message: string }>(`/purchases/${id}/receipt`, {
+      method: 'POST',
+      body: fd,
+    })
+  },
+  purchaseReceiptUrl: (id: number) => `${API_BASE}/purchases/${id}/receipt`,
+  deletePurchaseReceipt: (id: number) =>
+    request<{ ok: boolean }>(`/purchases/${id}/receipt`, { method: 'DELETE' }),
   salesReport: (period: string, year?: number, month?: number) => {
     const q = new URLSearchParams({ period })
     if (year) q.set('year', String(year))
@@ -227,9 +245,14 @@ export type Purchase = {
   id: number
   po_no: string
   purchase_date: string
+  supplier_id?: number | null
   supplier_name?: string
+  notes?: string | null
   total: number
+  has_receipt?: boolean
+  receipt_filename?: string | null
   items: {
+    id?: number
     product_id: number
     product_name?: string
     sku?: string
@@ -243,8 +266,10 @@ export type PurchaseCreate = {
   supplier_id?: number | null
   notes?: string
   purchase_date?: string | null
-  items: { product_id: number; quantity: number; unit_cost?: number }[]
+  items: { id?: number; product_id: number; quantity: number; unit_cost?: number }[]
 }
+
+export type PurchaseUpdate = PurchaseCreate
 
 export type Dashboard = {
   shop_name: string

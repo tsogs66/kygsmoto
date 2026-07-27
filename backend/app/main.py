@@ -8,10 +8,11 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.core.config import settings
-from app.core.database import Base, SessionLocal, engine
+from app.core.database import Base, SessionLocal, engine, ensure_sqlite_columns
 from app.services.seed import seed_if_empty
 
 Base.metadata.create_all(bind=engine)
+ensure_sqlite_columns()
 
 
 @asynccontextmanager

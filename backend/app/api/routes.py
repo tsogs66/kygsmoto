@@ -2,7 +2,9 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, joinedload
+from pathlib import Path
 
 from app.core.database import get_db
 from app.models.models import (
@@ -35,6 +37,7 @@ from app.schemas import (
     PurchaseImportResultOut,
     PurchaseOut,
     PurchaseRowsImportIn,
+    PurchaseUpdate,
     SaleCreate,
     SaleOut,
     SalesRowsImportIn,
@@ -53,7 +56,6 @@ from app.services.kygs_import import import_kygs_workbook
 from app.services.ocr_sales import preview_sales_photo, suggest_products
 from app.services.seed import purge_hardcoded_demo
 from app.services.stock import apply_stock_change, stock_status
-from pathlib import Path
 
 router = APIRouter()
 
@@ -138,6 +140,8 @@ def _purchase_out(p: Purchase) -> PurchaseOut:
         subtotal=p.subtotal,
         total=p.total,
         notes=p.notes,
+        has_receipt=bool(getattr(p, "receipt_path", None)),
+        receipt_filename=getattr(p, "receipt_filename", None),
         items=[
             {
                 "id": i.id,
@@ -425,6 +429,18 @@ def list_purchases(db: Session = Depends(get_db)):
     return [_purchase_out(p) for p in rows]
 
 
+@router.get("/purchases/{purchase_id}", response_model=PurchaseOut)
+def get_purchase(purchase_id: int, db: Session = Depends(get_db)):
+    purchase = (
+        db.query(Purchase)
+        .options(joinedload(Purchase.supplier), joinedload(Purchase.items).joinedload(PurchaseItem.product))
+        .get(purchase_id)
+    )
+    if not purchase:
+        raise HTTPException(404, "Purchase not found")
+    return _purchase_out(purchase)
+
+
 @router.post("/purchases", response_model=PurchaseOut)
 def create_purchase(payload: PurchaseCreate, db: Session = Depends(get_db)):
     if not payload.items:
@@ -463,6 +479,199 @@ def create_purchase(payload: PurchaseCreate, db: Session = Depends(get_db)):
         .get(purchase.id)
     )
     return _purchase_out(purchase)
+
+
+@router.put("/purchases/{purchase_id}", response_model=PurchaseOut)
+def update_purchase(purchase_id: int, payload: PurchaseUpdate, db: Session = Depends(get_db)):
+    """Edit purchase header + line items; stock is adjusted by quantity deltas."""
+    purchase = (
+        db.query(Purchase)
+        .options(joinedload(Purchase.supplier), joinedload(Purchase.items).joinedload(PurchaseItem.product))
+        .get(purchase_id)
+    )
+    if not purchase:
+        raise HTTPException(404, "Purchase not found")
+    if not payload.items:
+        raise HTTPException(400, "Purchase requires at least one item")
+
+    fields = payload.model_fields_set
+    if "supplier_id" in fields:
+        purchase.supplier_id = payload.supplier_id
+    if "notes" in fields:
+        purchase.notes = payload.notes
+    if "purchase_date" in fields:
+        purchase.purchase_date = payload.purchase_date
+
+    old_items = {i.id: i for i in list(purchase.items)}
+    kept_ids: set[int] = set()
+    new_lines: list[PurchaseItem] = []
+    subtotal = 0.0
+
+    for item in payload.items:
+        product = db.query(Product).get(item.product_id)
+        if not product:
+            raise HTTPException(400, f"Product {item.product_id} not found")
+        unit_cost = item.unit_cost if item.unit_cost is not None else product.cost_price
+        qty = float(item.quantity)
+        line_total = qty * unit_cost
+        subtotal += line_total
+
+        old = old_items.get(item.id) if item.id else None
+        if old and old.product_id == item.product_id:
+            delta = qty - float(old.quantity)
+            if abs(delta) > 1e-9:
+                apply_stock_change(
+                    db,
+                    product,
+                    delta,
+                    "adjust",
+                    reference=purchase.po_no,
+                    notes=f"Purchase {purchase.po_no} line edited",
+                )
+            kept_ids.add(old.id)
+            old.quantity = qty
+            old.unit_cost = unit_cost
+            old.line_total = line_total
+            new_lines.append(old)
+        else:
+            # New line (or product changed on existing line)
+            if old:
+                # reverse old product qty then treat as new
+                old_product = db.query(Product).get(old.product_id)
+                if old_product:
+                    apply_stock_change(
+                        db,
+                        old_product,
+                        -float(old.quantity),
+                        "adjust",
+                        reference=purchase.po_no,
+                        notes=f"Purchase {purchase.po_no} line replaced",
+                    )
+                kept_ids.add(old.id)
+            apply_stock_change(
+                db,
+                product,
+                qty,
+                "purchase",
+                reference=purchase.po_no,
+                notes=f"Purchase {purchase.po_no} line added/updated",
+            )
+            new_lines.append(
+                PurchaseItem(
+                    product_id=product.id,
+                    quantity=qty,
+                    unit_cost=unit_cost,
+                    line_total=line_total,
+                )
+            )
+        product.cost_price = unit_cost
+
+    # Removed lines → reverse stock
+    for oid, old in old_items.items():
+        if oid not in kept_ids and old not in new_lines:
+            old_product = db.query(Product).get(old.product_id)
+            if old_product:
+                apply_stock_change(
+                    db,
+                    old_product,
+                    -float(old.quantity),
+                    "adjust",
+                    reference=purchase.po_no,
+                    notes=f"Purchase {purchase.po_no} line removed",
+                )
+
+    purchase.items = new_lines
+    purchase.subtotal = subtotal
+    purchase.total = subtotal
+    db.commit()
+    purchase = (
+        db.query(Purchase)
+        .options(joinedload(Purchase.supplier), joinedload(Purchase.items).joinedload(PurchaseItem.product))
+        .get(purchase_id)
+    )
+    return _purchase_out(purchase)
+
+
+@router.post("/purchases/{purchase_id}/receipt")
+async def upload_purchase_receipt(
+    purchase_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Attach a receipt photo/PDF to an existing purchase entry."""
+    from app.core.config import settings
+
+    purchase = db.query(Purchase).get(purchase_id)
+    if not purchase:
+        raise HTTPException(404, "Purchase not found")
+    filename = file.filename or "receipt.jpg"
+    lower = filename.lower()
+    if not any(lower.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".pdf", ".gif", ".bmp")):
+        if not (file.content_type or "").startswith(("image/", "application/pdf")):
+            raise HTTPException(400, "Upload an image or PDF receipt")
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "Empty file")
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(400, "Receipt too large (max 15MB)")
+
+    receipts_dir = settings.upload_dir / "receipts"
+    receipts_dir.mkdir(parents=True, exist_ok=True)
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in filename)[:120]
+    stored = f"po{purchase_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{safe}"
+    dest = receipts_dir / stored
+    dest.write_bytes(content)
+
+    # Remove previous receipt file if present
+    old = getattr(purchase, "receipt_path", None)
+    if old:
+        try:
+            Path(old).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    purchase.receipt_filename = filename
+    purchase.receipt_path = str(dest)
+    db.commit()
+    return {
+        "ok": True,
+        "purchase_id": purchase_id,
+        "receipt_filename": filename,
+        "has_receipt": True,
+        "message": f"Receipt attached to {purchase.po_no}",
+    }
+
+
+@router.get("/purchases/{purchase_id}/receipt")
+def get_purchase_receipt(purchase_id: int, db: Session = Depends(get_db)):
+    purchase = db.query(Purchase).get(purchase_id)
+    if not purchase:
+        raise HTTPException(404, "Purchase not found")
+    path = getattr(purchase, "receipt_path", None)
+    if not path or not Path(path).exists():
+        raise HTTPException(404, "No receipt uploaded for this purchase")
+    return FileResponse(
+        path,
+        filename=purchase.receipt_filename or Path(path).name,
+        media_type=None,
+    )
+
+
+@router.delete("/purchases/{purchase_id}/receipt")
+def delete_purchase_receipt(purchase_id: int, db: Session = Depends(get_db)):
+    purchase = db.query(Purchase).get(purchase_id)
+    if not purchase:
+        raise HTTPException(404, "Purchase not found")
+    path = getattr(purchase, "receipt_path", None)
+    if path:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except Exception:
+            pass
+    purchase.receipt_path = None
+    purchase.receipt_filename = None
+    db.commit()
+    return {"ok": True, "purchase_id": purchase_id, "has_receipt": False}
 
 
 # ---- Reports ----
