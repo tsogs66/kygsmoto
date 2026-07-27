@@ -51,14 +51,43 @@ cd frontend && npm install && npm run dev
 
 ### Proxmox LXC (Docker — recommended)
 
+**Full step-by-step (create CT, Console login, Docker on Debian, clone, open app):**  
+👉 **[deploy/PROXMOX.md](deploy/PROXMOX.md)**
+
+Quick path on the **PVE host**:
+
 ```bash
-# Inside the LXC (Debian/Ubuntu) with Docker installed:
-git clone <this-repo> && cd kygsmoto
-docker compose up -d --build
-# Open http://<lxc-ip>:8000
+# 1) Create nested Debian LXC (adjust CTID / storage / bridge / template)
+pct create 210 local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
+  --hostname kygsmoto --memory 2048 --cores 2 --swap 512 \
+  --rootfs local-lvm:16 --net0 name=eth0,bridge=vmbr0,ip=dhcp \
+  --unprivileged 1 --features nesting=1,keyctl=1 --onboot 1 --start 1
+
+# 2) Enter CT (no Console password needed)
+pct enter 210
 ```
 
-Or without Docker:
+Inside the **LXC** (Debian Bookworm — do **not** use `docker-compose-v2`):
+
+```bash
+apt update && apt install -y docker.io git curl \
+  && systemctl enable --now docker \
+  && mkdir -p /usr/local/lib/docker/cli-plugins \
+  && curl -fsSL https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64 \
+       -o /usr/local/lib/docker/cli-plugins/docker-compose \
+  && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
+  && cd ~ && rm -rf kygsmoto \
+  && git clone -b cursor/kygsmoto-sales-inventory-9004 https://github.com/tsogs66/kygsmoto.git \
+  && cd kygsmoto \
+  && docker compose up -d --build \
+  && echo "Open http://$(hostname -I | awk '{print $1}'):8000"
+```
+
+- **Web app:** `http://<lxc-ip>:8000` — **no app login** (auth not implemented yet)  
+- **Console `kygsmoto login:`:** Linux root only — set with `pct exec 210 -- passwd` on the PVE host  
+- Helper script: [`deploy/create-lxc.sh`](deploy/create-lxc.sh)
+
+Or without Docker (Python build inside the CT):
 
 ```bash
 chmod +x deploy/lxc-install.sh
