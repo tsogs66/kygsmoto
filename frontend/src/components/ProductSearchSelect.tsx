@@ -42,13 +42,26 @@ export default function ProductSearchSelect({
     const sugIds = new Set(suggestions.map((s) => s.id))
     let list = products
     if (query) {
-      list = products.filter(
-        (p) =>
-          p.sku.toLowerCase().includes(query) ||
-          p.name.toLowerCase().includes(query) ||
-          (p.brand || '').toLowerCase().includes(query) ||
-          (p.fitment || '').toLowerCase().includes(query),
-      )
+      const qCompact = query.replace(/[\s\-_]/g, '')
+      list = products
+        .map((p) => {
+          const sku = p.sku.toLowerCase()
+          const skuCompact = sku.replace(/[\s\-_]/g, '')
+          const name = p.name.toLowerCase()
+          const brand = (p.brand || '').toLowerCase()
+          const fitment = (p.fitment || '').toLowerCase()
+          let rank = 0
+          if (sku === query || skuCompact === qCompact) rank = 100
+          else if (sku.startsWith(query) || skuCompact.startsWith(qCompact)) rank = 90
+          else if (sku.includes(query) || skuCompact.includes(qCompact)) rank = 80
+          else if (name.includes(query)) rank = 60
+          else if (brand.includes(query) || fitment.includes(query)) rank = 40
+          else rank = 0
+          return { p, rank }
+        })
+        .filter((x) => x.rank > 0)
+        .sort((a, b) => b.rank - a.rank || a.p.sku.localeCompare(b.p.sku))
+        .map((x) => x.p)
     }
     // Prefer suggestions first when no query
     if (!query && suggestions.length) {

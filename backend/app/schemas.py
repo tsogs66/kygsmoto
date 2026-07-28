@@ -226,6 +226,8 @@ class ImportPreviewRow(BaseModel):
     product_name: Optional[str] = None
     quantity: Optional[float] = None
     unit_price: Optional[float] = None
+    uom: Optional[str] = None
+    line_amount: Optional[float] = None
     customer: Optional[str] = None
     matched_product_id: Optional[int] = None
     matched_product_name: Optional[str] = None
@@ -268,6 +270,7 @@ class OcrPreviewOut(BaseModel):
     total_qty: float
     message: str = ""
     mode: str = "sale"
+    document_type: str = "freeform"
 
 
 class SalesRowConfirm(BaseModel):
@@ -280,6 +283,8 @@ class SalesRowConfirm(BaseModel):
     quantity: Optional[float] = None
     unit_price: Optional[float] = None
     unit_cost: Optional[float] = None
+    uom: Optional[str] = None
+    line_amount: Optional[float] = None
     customer: Optional[str] = None
     matched_product_id: Optional[int] = None
     product_id: Optional[int] = None
@@ -304,6 +309,7 @@ class PurchaseImportResultOut(BaseModel):
     batch_id: Optional[int] = None
     filename: str
     po_no: Optional[str] = None
+    po_nos: list[str] = []
     rows_imported: int
     rows_skipped: int
     stock_added: float

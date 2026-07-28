@@ -192,12 +192,37 @@ def read_sales_dataframe(filename: str, content: bytes) -> pd.DataFrame:
 
 def find_product(db: Session, sku: Optional[str], product_name: Optional[str]) -> Optional[Product]:
     if sku:
-        product = db.query(Product).filter(Product.sku == str(sku).strip()).first()
+        raw = str(sku).strip()
+        product = db.query(Product).filter(Product.sku == raw).first()
         if product:
             return product
-        product = db.query(Product).filter(Product.barcode == str(sku).strip()).first()
+        # Case-insensitive SKU / barcode (supplier Item Code vs inventory)
+        product = db.query(Product).filter(Product.sku.ilike(raw)).first()
         if product:
             return product
+        product = db.query(Product).filter(Product.barcode == raw).first()
+        if product:
+            return product
+        product = db.query(Product).filter(Product.barcode.ilike(raw)).first()
+        if product:
+            return product
+        # Normalized match (dashes/spaces/OCR lookalikes)
+        try:
+            from app.services.ocr_sales import _sku_variants
+
+            want = _sku_variants(raw)
+            if want:
+                candidates = (
+                    db.query(Product)
+                    .filter(Product.is_active.is_(True))
+                    .filter(Product.sku.isnot(None))
+                    .all()
+                )
+                for p in candidates:
+                    if _sku_variants(p.sku or "") & want:
+                        return p
+        except Exception:
+            pass
     if product_name:
         name = str(product_name).strip()
         product = db.query(Product).filter(Product.name.ilike(name)).first()
@@ -664,7 +689,13 @@ def import_purchase_rows(
     notes: Optional[str] = None,
     purchase_date: Optional[Any] = None,
 ) -> dict:
-    """Post corrected OCR/manual rows as a stock-receiving purchase."""
+    """Post corrected OCR/manual rows as stock-receiving purchase(s).
+
+    Rows from Quotation/Invoice Register may span multiple Inv No sections —
+    each invoice (+ date) becomes its own purchase entry.
+    """
+    from collections import OrderedDict
+
     from app.models.models import Purchase, PurchaseItem
 
     def _next_po() -> str:
@@ -684,8 +715,8 @@ def import_purchase_rows(
     db.add(batch)
     db.flush()
 
-    parsed_date = _parse_date(purchase_date) if purchase_date else None
-    lines: list[dict] = []
+    fallback_date = _parse_date(purchase_date) if purchase_date else None
+    groups: "OrderedDict[tuple, list[dict]]" = OrderedDict()
     unmatched: list[str] = []
     skipped = 0
 
@@ -706,9 +737,9 @@ def import_purchase_rows(
             skipped += 1
             continue
 
-        row_date = _parse_date(row.get("purchase_date") or row.get("sale_date"))
-        if row_date and not parsed_date:
-            parsed_date = row_date
+        row_date = _parse_date(row.get("purchase_date") or row.get("sale_date")) or fallback_date
+        inv = (row.get("invoice_no") or "").strip() or ""
+        key = (inv, row_date.isoformat() if row_date else "")
 
         cost = row.get("unit_cost")
         if cost in (None, ""):
@@ -717,9 +748,17 @@ def import_purchase_rows(
         if unit_cost <= 0:
             unit_cost = float(product.cost_price or 0)
 
-        lines.append({"product": product, "qty": qty, "unit_cost": unit_cost})
+        groups.setdefault(key, []).append(
+            {
+                "product": product,
+                "qty": qty,
+                "unit_cost": unit_cost,
+                "invoice_no": inv or None,
+                "date": row_date,
+            }
+        )
 
-    if not lines:
+    if not groups:
         batch.status = "failed"
         batch.summary = "No valid purchase lines — select products and quantities first"
         batch.rows_imported = 0
@@ -727,50 +766,59 @@ def import_purchase_rows(
         db.commit()
         raise ValueError(batch.summary)
 
-    po_no = _next_po()
-    purchase = Purchase(
-        po_no=po_no,
-        purchase_date=parsed_date or datetime.utcnow(),
-        supplier_id=supplier_id,
-        notes=notes or f"Imported from {filename}",
-    )
-    subtotal = 0.0
+    po_nos: list[str] = []
     stock_added = 0.0
-    for line in lines:
-        product = line["product"]
-        qty = float(line["qty"])
-        unit_cost = float(line["unit_cost"])
-        line_total = qty * unit_cost
-        subtotal += line_total
-        purchase.items.append(
-            PurchaseItem(
-                product_id=product.id,
-                quantity=qty,
-                unit_cost=unit_cost,
-                line_total=line_total,
+    imported = 0
+    for (inv, _date_key), lines in groups.items():
+        po_no = _next_po()
+        po_nos.append(po_no)
+        line_date = lines[0].get("date") or fallback_date or datetime.utcnow()
+        note_parts = [notes] if notes else [f"Imported from {filename}"]
+        if inv:
+            note_parts.append(f"Inv {inv}")
+        purchase = Purchase(
+            po_no=po_no,
+            purchase_date=line_date,
+            supplier_id=supplier_id,
+            notes=" · ".join(p for p in note_parts if p),
+        )
+        subtotal = 0.0
+        for line in lines:
+            product = line["product"]
+            qty = float(line["qty"])
+            unit_cost = float(line["unit_cost"])
+            line_total = qty * unit_cost
+            subtotal += line_total
+            purchase.items.append(
+                PurchaseItem(
+                    product_id=product.id,
+                    quantity=qty,
+                    unit_cost=unit_cost,
+                    line_total=line_total,
+                )
             )
-        )
-        product.cost_price = unit_cost
-        apply_stock_change(
-            db,
-            product,
-            qty,
-            movement_type="purchase",
-            reference=po_no,
-            notes=f"Stock received from purchase OCR/import ({filename})",
-        )
-        stock_added += qty
+            product.cost_price = unit_cost
+            apply_stock_change(
+                db,
+                product,
+                qty,
+                movement_type="purchase",
+                reference=po_no,
+                notes=f"Stock received from purchase OCR/import ({filename})",
+            )
+            stock_added += qty
+            imported += 1
+        purchase.subtotal = subtotal
+        purchase.total = subtotal
+        db.add(purchase)
+        db.flush()
 
-    purchase.subtotal = subtotal
-    purchase.total = subtotal
-    db.add(purchase)
-
-    batch.rows_imported = len(lines)
+    batch.rows_imported = imported
     batch.rows_skipped = skipped
     batch.stock_deducted = 0
     batch.unmatched_skus = json.dumps(sorted(set(unmatched)))
     batch.summary = (
-        f"Created purchase {po_no}; imported {len(lines)} lines; "
+        f"Created {len(po_nos)} purchase(s) ({', '.join(po_nos)}); imported {imported} lines; "
         f"skipped {skipped}; added {stock_added} units to stock"
     )
     batch.status = "completed"
@@ -780,11 +828,12 @@ def import_purchase_rows(
     return {
         "batch_id": batch.id,
         "filename": filename,
-        "po_no": po_no,
-        "rows_imported": len(lines),
+        "po_no": po_nos[0] if po_nos else None,
+        "po_nos": po_nos,
+        "rows_imported": imported,
         "rows_skipped": skipped,
         "stock_added": stock_added,
         "unmatched_skus": sorted(set(unmatched)),
-        "purchases_created": 1,
+        "purchases_created": len(po_nos),
         "message": batch.summary,
     }

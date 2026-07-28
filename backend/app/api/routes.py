@@ -819,7 +819,7 @@ async def ocr_preview_purchase_photo(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """OCR a handwritten purchase / delivery receipt into editable receive rows."""
+    """OCR a Quotation/Invoice Register or handwritten purchase photo into editable receive rows."""
     import asyncio
     from app.core.config import settings
     from app.services.ocr_sales import extract_text_from_image

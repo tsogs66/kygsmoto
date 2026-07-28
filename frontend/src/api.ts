@@ -419,6 +419,8 @@ export type OcrEditableRow = {
   quantity?: number | null
   unit_price?: number | null
   unit_cost?: number | null
+  uom?: string | null
+  line_amount?: number | null
   customer?: string | null
   matched_product_id?: number | null
   matched_product_name?: string | null
@@ -440,6 +442,7 @@ export type OcrPreview = {
   total_qty: number
   message: string
   mode?: string
+  document_type?: string
 }
 
 export type PurchaseImportResult = {
