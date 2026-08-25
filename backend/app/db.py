@@ -4,10 +4,20 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 
-DB_PATH = os.environ.get(
-    "KYGS_DB",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kygs.db"),
+DEFAULT_DB_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kygs.db"
 )
+
+
+def current_db_path() -> str:
+    """Where the database lives, resolved on each use.
+
+    Read at call time rather than at import: binding it at import makes the
+    location depend on whether KYGS_DB happened to be set before this module was
+    first imported, which silently points the app at the wrong file when import
+    order changes.
+    """
+    return os.environ.get("KYGS_DB") or DEFAULT_DB_PATH
 
 _local = threading.local()
 
@@ -208,6 +218,45 @@ CREATE TABLE IF NOT EXISTS demand_history (
 );
 CREATE INDEX IF NOT EXISTS ix_demand_item ON demand_history(item_id, period);
 
+CREATE TABLE IF NOT EXISTS jobs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_no        TEXT NOT NULL UNIQUE,
+    status        TEXT NOT NULL DEFAULT 'queued',
+    priority      TEXT NOT NULL DEFAULT 'normal',
+    customer_name TEXT NOT NULL DEFAULT '',
+    contact       TEXT NOT NULL DEFAULT '',
+    plate_no      TEXT NOT NULL DEFAULT '',
+    motorcycle    TEXT NOT NULL DEFAULT '',
+    complaint     TEXT NOT NULL DEFAULT '',
+    notes         TEXT NOT NULL DEFAULT '',
+    assigned_to   INTEGER REFERENCES users(id),
+    created_by    INTEGER NOT NULL REFERENCES users(id),
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at    TEXT,
+    ready_at      TEXT,
+    completed_at  TEXT,
+    cancelled_at  TEXT,
+    cancel_reason TEXT NOT NULL DEFAULT '',
+    sale_id       INTEGER REFERENCES sales(id)
+);
+CREATE INDEX IF NOT EXISTS ix_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS ix_jobs_plate ON jobs(plate_no);
+
+CREATE TABLE IF NOT EXISTS job_lines (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    line_type   TEXT NOT NULL DEFAULT 'item',
+    item_id     INTEGER REFERENCES items(id),
+    service_id  INTEGER REFERENCES services(id),
+    sku         TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL,
+    qty         REAL NOT NULL,
+    unit_price  REAL NOT NULL DEFAULT 0,
+    discount    REAL NOT NULL DEFAULT 0,
+    added_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_job_lines_job ON job_lines(job_id);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -269,7 +318,7 @@ def connect() -> sqlite3.Connection:
     """Return this thread's connection, creating it on first use."""
     conn = getattr(_local, "conn", None)
     if conn is None:
-        conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+        conn = sqlite3.connect(current_db_path(), timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")

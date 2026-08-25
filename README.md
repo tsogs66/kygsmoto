@@ -12,6 +12,31 @@ to reorder before it runs out.
 
 ## Quick start
 
+### Docker (recommended if you already run Docker)
+
+Listens on **port 8001**, so it will not collide with anything already on 8000:
+
+```bash
+docker compose up -d --build
+docker compose logs kygspos | grep -A3 "First run"     # the generated admin password
+docker compose run --rm kygspos \
+    python -m backend.seed.import_xlsm "/app/KYGS APRIL 2025.xlsm"
+docker compose restart kygspos
+```
+
+The database lives on the named volume `kygspos_data` at `/data/kygs.db`, so it
+survives rebuilds. Change the host port by editing the left-hand number under
+`ports:` in `docker-compose.yml`.
+
+Back it up from the host with:
+
+```bash
+docker run --rm -v kygspos_data:/d -v "$PWD":/b alpine \
+    cp /d/kygs.db /b/kygs-$(date +%F).db
+```
+
+### Without Docker
+
 ```bash
 ./run.sh                      # http://127.0.0.1:8000
 ./run.sh --lan                # let other tills on the shop network connect
@@ -34,11 +59,27 @@ python3 -m backend.seed.import_xlsm "KYGS APRIL 2025.xlsm"
 The import is idempotent — re-running it updates matched records rather than
 duplicating them. It reports any item code the workbook uses twice.
 
+### Add the common labour jobs
+
+The workbook supplies the 45 rates KYGS already charges. This adds the other
+jobs a motorcycle shop does — CVT work, brake bleeding, electrical repairs,
+wheel work, PMS — as labour lines that carry no stock:
+
+```bash
+python3 -m backend.seed.services_catalog --dry-run   # preview
+python3 -m backend.seed.services_catalog             # apply
+python3 -m backend.seed.services_catalog --zero-fees # add them unpriced
+```
+
+Also idempotent, and it never overwrites a rate the shop already set. The
+suggested fees follow the shop's own rate card, but **review them in
+Admin → Services before trading on them**.
+
 ### Tests
 
 ```bash
 pip install -r requirements-dev.txt
-python3 -m pytest tests/ -q          # 106 tests
+python3 -m pytest tests/ -q          # 139 tests
 ```
 
 ---
@@ -53,6 +94,19 @@ cash drawer that reconciles counted cash against expected.
 Every sale is one atomic transaction: if any line fails — an oversell, a bad
 payment — nothing is committed and no stock moves. Stock never silently goes
 negative at the till.
+
+### Job queue
+Work tickets for bikes in the shop, under *Point of Sale → Job queue*. Each
+ticket carries the customer, plate, model and reported problem, and moves
+**waiting → in progress → ready for release → completed**. Parts and labour are
+added as the work goes on, and a cart at the till can be handed straight to a
+ticket with **To job**.
+
+Stock moves at checkout, never when a line is added — so a bike sitting in the
+queue does not quietly hold parts the counter could still sell. Lines that need
+more than is on the shelf are flagged `short` on the ticket, and payment is
+refused rather than driving stock negative. The board shows what is waiting, how
+long it has been there, and the value of work currently in the shop.
 
 ### Stock control
 Full item master with cost, retail price, reorder point, supplier and shelf
@@ -156,9 +210,12 @@ backend/
     services/
       forecast.py        Croston/SBA, Holt, EOQ, safety stock, ABC — pure maths
       analytics.py       Applies the maths to live sales data
-  seed/import_xlsm.py    Workbook importer
+  seed/import_xlsm.py       Workbook importer
+  seed/services_catalog.py  Common motorcycle labour jobs
 frontend/                Vanilla ES modules, no build step
-tests/                   106 tests
+tests/                   139 tests
+Dockerfile               Container image (database on a /data volume)
+docker-compose.yml       Runs on host port 8001
 ```
 
 **Stack:** Python 3.11+, FastAPI, SQLite (WAL). The front end is plain ES

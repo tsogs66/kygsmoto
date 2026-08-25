@@ -1,0 +1,23 @@
+# Runs the KYGS POS on host port 8001, so it cannot collide with an existing
+# service on 8000. Change the left-hand number to move it.
+services:
+  kygspos:
+    build: .
+    image: kygspos
+    container_name: kygspos
+    ports:
+      - "8001:8000"
+    volumes:
+      - kygspos_data:/data
+      # The workbook, for the one-off import. Read-only: nothing writes to it.
+      - "./KYGS APRIL 2025.xlsm:/app/KYGS APRIL 2025.xlsm:ro"
+    environment:
+      - TZ=Asia/Manila
+      - KYGS_DB=/data/kygs.db
+      # Set this to choose the first admin password; otherwise one is
+      # generated and printed once to the container log.
+      # - KYGS_ADMIN_PASSWORD=ChangeMe123
+    restart: unless-stopped
+
+volumes:
+  kygspos_data:

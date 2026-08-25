@@ -76,5 +76,5 @@ def health(user=Depends(require("settings.manage"))):
             "missing_retail_price": no_price,
             "orphan_stock_moves": orphan_moves,
         },
-        "database": db.DB_PATH,
+        "database": db.current_db_path(),
     }
