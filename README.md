@@ -79,7 +79,7 @@ Admin → Services before trading on them**.
 
 ```bash
 pip install -r requirements-dev.txt
-python3 -m pytest tests/ -q          # 106 tests
+python3 -m pytest tests/ -q          # 139 tests
 ```
 
 ---
@@ -94,6 +94,19 @@ cash drawer that reconciles counted cash against expected.
 Every sale is one atomic transaction: if any line fails — an oversell, a bad
 payment — nothing is committed and no stock moves. Stock never silently goes
 negative at the till.
+
+### Job queue
+Work tickets for bikes in the shop, under *Point of Sale → Job queue*. Each
+ticket carries the customer, plate, model and reported problem, and moves
+**waiting → in progress → ready for release → completed**. Parts and labour are
+added as the work goes on, and a cart at the till can be handed straight to a
+ticket with **To job**.
+
+Stock moves at checkout, never when a line is added — so a bike sitting in the
+queue does not quietly hold parts the counter could still sell. Lines that need
+more than is on the shelf are flagged `short` on the ticket, and payment is
+refused rather than driving stock negative. The board shows what is waiting, how
+long it has been there, and the value of work currently in the shop.
 
 ### Stock control
 Full item master with cost, retail price, reorder point, supplier and shelf
@@ -200,7 +213,7 @@ backend/
   seed/import_xlsm.py       Workbook importer
   seed/services_catalog.py  Common motorcycle labour jobs
 frontend/                Vanilla ES modules, no build step
-tests/                   106 tests
+tests/                   139 tests
 Dockerfile               Container image (database on a /data volume)
 docker-compose.yml       Runs on host port 8001
 ```

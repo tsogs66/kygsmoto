@@ -1,6 +1,7 @@
 // The till: search parts, add labour, tender, print.
 
 import { api, session } from '../api.js';
+import * as jobs from './jobs.js';
 import {
   confirmDialog, debounce, empty, esc, loading, modal, money, num, toast,
 } from '../ui.js';
@@ -14,7 +15,7 @@ export async function render(root) {
     <div class="page-head">
       <div>
         <h2>Point of Sale</h2>
-        <p>Scan a barcode, or search by item code or description.</p>
+        <p id="pos-sub">Scan a barcode, or search by item code or description.</p>
       </div>
       <div class="page-actions">
         <button class="btn btn-sm" id="pos-holds">Held sales</button>
@@ -22,6 +23,44 @@ export async function render(root) {
       </div>
     </div>
 
+    <div class="tab-row">
+      <button class="tab active" data-pane="till">Till</button>
+      <button class="tab" data-pane="queue">Job queue <span id="pos-jobcount"></span></button>
+    </div>
+    <div id="pos-pane"></div>`;
+
+  const pane = document.getElementById('pos-pane');
+  root.querySelectorAll('[data-pane]').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      root.querySelectorAll('[data-pane]').forEach((t) =>
+        t.classList.toggle('active', t === tab));
+      document.getElementById('pos-sub').textContent = tab.dataset.pane === 'till'
+        ? 'Scan a barcode, or search by item code or description.'
+        : 'Bikes in the shop: what is waiting, in progress and ready for release.';
+      if (tab.dataset.pane === 'till') renderTill(pane);
+      else jobs.render(pane);
+    });
+  });
+
+  document.getElementById('pos-holds').addEventListener('click', openHolds);
+  document.getElementById('pos-drawer').addEventListener('click', openDrawer);
+
+  jobs.setChangeHandler(refreshJobCount);
+  refreshJobCount();
+  await renderTill(pane);
+}
+
+/** Badge on the Job queue tab, so pending work is visible from the till. */
+async function refreshJobCount(known) {
+  const badgeEl = document.getElementById('pos-jobcount');
+  if (!badgeEl) return;
+  const count = known === undefined ? await jobs.pendingCount() : known;
+  badgeEl.innerHTML = count > 0
+    ? `<span class="badge badge-warn" style="margin-left:4px">${count}</span>` : '';
+}
+
+async function renderTill(root) {
+  root.innerHTML = `
     <div class="pos-layout">
       <div class="card">
         <div class="tab-row">
@@ -42,6 +81,7 @@ export async function render(root) {
         <div style="display:grid;gap:8px;margin-top:14px">
           <button class="btn btn-primary btn-lg" id="cart-pay" disabled>Take payment</button>
           <div style="display:flex;gap:8px">
+            <button class="btn btn-sm" id="cart-job" style="flex:1" disabled>To job</button>
             <button class="btn btn-sm" id="cart-hold" style="flex:1" disabled>Hold</button>
             <button class="btn btn-sm" id="cart-clear" style="flex:1" disabled>Clear</button>
           </div>
@@ -93,8 +133,7 @@ export async function render(root) {
     }
   });
   document.getElementById('cart-hold').addEventListener('click', holdSale);
-  document.getElementById('pos-holds').addEventListener('click', openHolds);
-  document.getElementById('pos-drawer').addEventListener('click', openDrawer);
+  document.getElementById('cart-job').addEventListener('click', cartToJob);
 
   services = (await api.get('/api/services')).services;
   drawCart();
@@ -242,7 +281,7 @@ function drawCart() {
   document.getElementById('cart-count').textContent =
     cart.lines.length ? `${cart.lines.length} line${cart.lines.length > 1 ? 's' : ''}` : '';
 
-  for (const id of ['cart-pay', 'cart-hold', 'cart-clear']) {
+  for (const id of ['cart-pay', 'cart-hold', 'cart-clear', 'cart-job']) {
     document.getElementById(id).disabled = cart.lines.length === 0;
   }
 
@@ -434,6 +473,20 @@ export function showReceipt(payload) {
       root.querySelector('#receipt-print-btn').addEventListener('click', () => window.print());
     },
   });
+}
+
+/** Move the open cart onto a job ticket, for work that will not finish today. */
+function cartToJob() {
+  jobs.openEditor(cart.lines.map((line) => ({
+    line_type: line.type === 'item' ? 'item' : 'service',
+    item_id: line.type === 'item' ? line.id : null,
+    service_id: line.type === 'service' ? line.id : null,
+    qty: line.qty,
+    discount: line.discount,
+  })));
+  cart.lines = [];
+  cart.orderDiscount = 0;
+  drawCart();
 }
 
 async function holdSale() {

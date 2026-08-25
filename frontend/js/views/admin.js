@@ -209,7 +209,8 @@ function openReset(userId, username) {
              <button class="btn btn-danger" id="pr-save">Reset password</button>`,
     onMount: (root, close) => {
       root.querySelector('#pr-save').addEventListener('click', async (event) => {
-        event.currentTarget.disabled = true;
+        const button = event.currentTarget;
+        button.disabled = true;
         const errorBox = root.querySelector('#pr-error');
         errorBox.hidden = true;
         try {
@@ -221,7 +222,7 @@ function openReset(userId, username) {
         } catch (error) {
           errorBox.textContent = error.message;
           errorBox.hidden = false;
-          event.currentTarget.disabled = false;
+          button.disabled = false;
         }
       });
     },
@@ -284,7 +285,8 @@ function openSupplier(supplier) {
              <button class="btn btn-primary" id="s-save">Save</button>`,
     onMount: (root, close) => {
       root.querySelector('#s-save').addEventListener('click', async (event) => {
-        event.currentTarget.disabled = true;
+        const button = event.currentTarget;
+        button.disabled = true;
         const errorBox = root.querySelector('#s-error');
         errorBox.hidden = true;
         const payload = {
@@ -305,7 +307,7 @@ function openSupplier(supplier) {
         } catch (error) {
           errorBox.textContent = error.message;
           errorBox.hidden = false;
-          event.currentTarget.disabled = false;
+          button.disabled = false;
         }
       });
     },
@@ -354,7 +356,8 @@ function openService(service) {
              <button class="btn btn-primary" id="v-save">Save</button>`,
     onMount: (root, close) => {
       root.querySelector('#v-save').addEventListener('click', async (event) => {
-        event.currentTarget.disabled = true;
+        const button = event.currentTarget;
+        button.disabled = true;
         const errorBox = root.querySelector('#v-error');
         errorBox.hidden = true;
         const payload = {
@@ -371,7 +374,7 @@ function openService(service) {
         } catch (error) {
           errorBox.textContent = error.message;
           errorBox.hidden = false;
-          event.currentTarget.disabled = false;
+          button.disabled = false;
         }
       });
     },

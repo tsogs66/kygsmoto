@@ -11,8 +11,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db, security
-from .routers import (analytics_api, auth, catalog, inventory, pos, purchasing,
-                      reports, settings_api)
+from .routers import (analytics_api, auth, catalog, inventory, jobs, pos,
+                      purchasing, reports, settings_api)
 
 FRONTEND_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "frontend"
@@ -71,8 +71,10 @@ async def validation_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(status_code=422, content={"detail": "; ".join(problems)})
 
 
-for module in (auth, catalog, pos, inventory, purchasing, analytics_api, reports,
-               settings_api):
+# jobs must come before pos: its /api/pos/jobs routes would otherwise be
+# shadowed by pos's /api/pos/sales/{sale_id}-style paths at the same prefix.
+for module in (auth, catalog, jobs, pos, inventory, purchasing, analytics_api,
+               reports, settings_api):
     app.include_router(module.router)
 
 

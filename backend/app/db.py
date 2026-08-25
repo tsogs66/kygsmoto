@@ -218,6 +218,45 @@ CREATE TABLE IF NOT EXISTS demand_history (
 );
 CREATE INDEX IF NOT EXISTS ix_demand_item ON demand_history(item_id, period);
 
+CREATE TABLE IF NOT EXISTS jobs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_no        TEXT NOT NULL UNIQUE,
+    status        TEXT NOT NULL DEFAULT 'queued',
+    priority      TEXT NOT NULL DEFAULT 'normal',
+    customer_name TEXT NOT NULL DEFAULT '',
+    contact       TEXT NOT NULL DEFAULT '',
+    plate_no      TEXT NOT NULL DEFAULT '',
+    motorcycle    TEXT NOT NULL DEFAULT '',
+    complaint     TEXT NOT NULL DEFAULT '',
+    notes         TEXT NOT NULL DEFAULT '',
+    assigned_to   INTEGER REFERENCES users(id),
+    created_by    INTEGER NOT NULL REFERENCES users(id),
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at    TEXT,
+    ready_at      TEXT,
+    completed_at  TEXT,
+    cancelled_at  TEXT,
+    cancel_reason TEXT NOT NULL DEFAULT '',
+    sale_id       INTEGER REFERENCES sales(id)
+);
+CREATE INDEX IF NOT EXISTS ix_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS ix_jobs_plate ON jobs(plate_no);
+
+CREATE TABLE IF NOT EXISTS job_lines (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    line_type   TEXT NOT NULL DEFAULT 'item',
+    item_id     INTEGER REFERENCES items(id),
+    service_id  INTEGER REFERENCES services(id),
+    sku         TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL,
+    qty         REAL NOT NULL,
+    unit_price  REAL NOT NULL DEFAULT 0,
+    discount    REAL NOT NULL DEFAULT 0,
+    added_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_job_lines_job ON job_lines(job_id);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
