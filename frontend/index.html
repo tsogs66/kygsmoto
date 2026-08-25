@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>KYGS POS &amp; Inventory</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🏍️</text></svg>">
+</head>
+<body>
+  <!-- Login -->
+  <div id="login-screen" class="login-screen">
+    <form id="login-form" class="login-card" autocomplete="on">
+      <div class="login-brand">
+        <span class="login-logo">🏍️</span>
+        <h1>KYGS</h1>
+        <p>Point of Sale &amp; Inventory</p>
+      </div>
+      <label class="field">
+        <span>Username</span>
+        <input id="login-username" name="username" autocomplete="username" required autofocus>
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input id="login-password" name="password" type="password"
+               autocomplete="current-password" required>
+      </label>
+      <div id="login-error" class="alert alert-error" hidden></div>
+      <button class="btn btn-primary btn-block" type="submit">Sign in</button>
+    </form>
+  </div>
+
+  <!-- Forced password change -->
+  <div id="pwchange-screen" class="login-screen" hidden>
+    <form id="pwchange-form" class="login-card">
+      <div class="login-brand">
+        <span class="login-logo">🔐</span>
+        <h1>Set a new password</h1>
+        <p>Choose your own password before continuing.</p>
+      </div>
+      <label class="field">
+        <span>Current password</span>
+        <input id="pw-current" type="password" autocomplete="current-password" required>
+      </label>
+      <label class="field">
+        <span>New password</span>
+        <input id="pw-new" type="password" autocomplete="new-password" required>
+      </label>
+      <label class="field">
+        <span>Confirm new password</span>
+        <input id="pw-confirm" type="password" autocomplete="new-password" required>
+      </label>
+      <div id="pw-error" class="alert alert-error" hidden></div>
+      <button class="btn btn-primary btn-block" type="submit">Save password</button>
+    </form>
+  </div>
+
+  <!-- Main application -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="topbar-brand">
+        <span class="topbar-logo">🏍️</span>
+        <span id="shop-name">KYGS</span>
+      </div>
+      <nav id="main-nav" class="topbar-nav"></nav>
+      <div class="topbar-user">
+        <div class="user-meta">
+          <strong id="user-name"></strong>
+          <span id="user-role" class="badge"></span>
+        </div>
+        <button id="logout-btn" class="btn btn-ghost btn-sm" type="button">Sign out</button>
+      </div>
+    </header>
+    <main id="view" class="view"></main>
+  </div>
+
+  <div id="toasts" class="toasts"></div>
+  <div id="modal-root"></div>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
