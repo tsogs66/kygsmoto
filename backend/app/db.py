@@ -4,10 +4,20 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 
-DB_PATH = os.environ.get(
-    "KYGS_DB",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kygs.db"),
+DEFAULT_DB_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kygs.db"
 )
+
+
+def current_db_path() -> str:
+    """Where the database lives, resolved on each use.
+
+    Read at call time rather than at import: binding it at import makes the
+    location depend on whether KYGS_DB happened to be set before this module was
+    first imported, which silently points the app at the wrong file when import
+    order changes.
+    """
+    return os.environ.get("KYGS_DB") or DEFAULT_DB_PATH
 
 _local = threading.local()
 
@@ -269,7 +279,7 @@ def connect() -> sqlite3.Connection:
     """Return this thread's connection, creating it on first use."""
     conn = getattr(_local, "conn", None)
     if conn is None:
-        conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+        conn = sqlite3.connect(current_db_path(), timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")

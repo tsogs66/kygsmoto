@@ -59,6 +59,22 @@ python3 -m backend.seed.import_xlsm "KYGS APRIL 2025.xlsm"
 The import is idempotent — re-running it updates matched records rather than
 duplicating them. It reports any item code the workbook uses twice.
 
+### Add the common labour jobs
+
+The workbook supplies the 45 rates KYGS already charges. This adds the other
+jobs a motorcycle shop does — CVT work, brake bleeding, electrical repairs,
+wheel work, PMS — as labour lines that carry no stock:
+
+```bash
+python3 -m backend.seed.services_catalog --dry-run   # preview
+python3 -m backend.seed.services_catalog             # apply
+python3 -m backend.seed.services_catalog --zero-fees # add them unpriced
+```
+
+Also idempotent, and it never overwrites a rate the shop already set. The
+suggested fees follow the shop's own rate card, but **review them in
+Admin → Services before trading on them**.
+
 ### Tests
 
 ```bash
@@ -181,7 +197,8 @@ backend/
     services/
       forecast.py        Croston/SBA, Holt, EOQ, safety stock, ABC — pure maths
       analytics.py       Applies the maths to live sales data
-  seed/import_xlsm.py    Workbook importer
+  seed/import_xlsm.py       Workbook importer
+  seed/services_catalog.py  Common motorcycle labour jobs
 frontend/                Vanilla ES modules, no build step
 tests/                   106 tests
 Dockerfile               Container image (database on a /data volume)
