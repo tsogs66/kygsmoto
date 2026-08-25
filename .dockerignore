@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+*.db
+*.db-wal
+*.db-shm
+backups/
+tests/
+node_modules/
+# Bind-mounted at runtime for the import; no need in the build context.
+*.xlsm

@@ -12,6 +12,31 @@ to reorder before it runs out.
 
 ## Quick start
 
+### Docker (recommended if you already run Docker)
+
+Listens on **port 8001**, so it will not collide with anything already on 8000:
+
+```bash
+docker compose up -d --build
+docker compose logs kygspos | grep -A3 "First run"     # the generated admin password
+docker compose run --rm kygspos \
+    python -m backend.seed.import_xlsm "/app/KYGS APRIL 2025.xlsm"
+docker compose restart kygspos
+```
+
+The database lives on the named volume `kygspos_data` at `/data/kygs.db`, so it
+survives rebuilds. Change the host port by editing the left-hand number under
+`ports:` in `docker-compose.yml`.
+
+Back it up from the host with:
+
+```bash
+docker run --rm -v kygspos_data:/d -v "$PWD":/b alpine \
+    cp /d/kygs.db /b/kygs-$(date +%F).db
+```
+
+### Without Docker
+
 ```bash
 ./run.sh                      # http://127.0.0.1:8000
 ./run.sh --lan                # let other tills on the shop network connect
@@ -159,6 +184,8 @@ backend/
   seed/import_xlsm.py    Workbook importer
 frontend/                Vanilla ES modules, no build step
 tests/                   106 tests
+Dockerfile               Container image (database on a /data volume)
+docker-compose.yml       Runs on host port 8001
 ```
 
 **Stack:** Python 3.11+, FastAPI, SQLite (WAL). The front end is plain ES
