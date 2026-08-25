@@ -1,0 +1,21 @@
+# Database and its write-ahead log
+*.db
+*.db-wal
+*.db-shm
+backend/kygs.db*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Node (only used for optional tooling)
+node_modules/
