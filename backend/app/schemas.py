@@ -454,3 +454,47 @@ class InventoryReportOut(BaseModel):
     low_stock: list[dict]
     by_category: list[dict]
     movements: list[dict] = []
+
+# ---- Job queue ----
+
+
+class JobLineIn(BaseModel):
+    product_id: int
+    quantity: float = Field(gt=0)
+    unit_price: Optional[float] = None
+
+
+class JobCreate(BaseModel):
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    contact: Optional[str] = None
+    plate_no: Optional[str] = None
+    motorcycle: Optional[str] = None
+    complaint: Optional[str] = None
+    notes: Optional[str] = None
+    mechanic: Optional[str] = None
+    priority: str = "normal"
+    lines: list[JobLineIn] = []
+
+
+class JobUpdate(BaseModel):
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    customer_name: Optional[str] = None
+    contact: Optional[str] = None
+    plate_no: Optional[str] = None
+    motorcycle: Optional[str] = None
+    complaint: Optional[str] = None
+    notes: Optional[str] = None
+    mechanic: Optional[str] = None
+
+
+class JobCancel(BaseModel):
+    reason: str = Field(min_length=3)
+
+
+class JobCheckout(BaseModel):
+    payment_method: str = "cash"
+    payment_status: str = "paid"
+    discount: float = 0.0
+    allow_negative_stock: bool = False
