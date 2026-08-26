@@ -155,27 +155,35 @@ Do not confuse:
 
 ---
 
-## 6. Import the KYGS Excel workbook (optional)
+## 6. Import the KYGS Excel workbook (optional, one-off)
 
-After the container is up:
+The app keeps its own database — the volume `kygsmoto_data` is the shop's record.
+The workbook is **not** shipped inside the image, and nothing at runtime depends
+on it. Import one only if you are seeding a fresh database from the old
+spreadsheet.
 
-```bash
-# from host browser / app UI:
-# Sales File Import → "Import KYGS APRIL 2025.xlsm from server"
+The simplest route is the app itself:
 
-# or inside the running API container / venv:
-docker compose exec kygsmoto python scripts/import_kygs.py "/app/KYGS APRIL 2025.xlsm"
+```
+Sales File Import  →  Upload .xlsm
 ```
 
-If the workbook is only on the host filesystem at the repo root:
+To import from the command line instead, mount the workbook in and point the
+script at it:
 
 ```bash
-cd ~/kygsmoto
-docker compose exec kygsmoto ls /app
-# mount/copy as needed; UI upload also works via /api/imports/workbook
+docker compose run --rm \
+  -v "$PWD/KYGS APRIL 2025.xlsm:/tmp/kygs.xlsm:ro" \
+  kygsmoto python scripts/import_kygs.py /tmp/kygs.xlsm
 ```
 
----
+After the first import the spreadsheet is no longer needed. Back up the volume,
+not the workbook:
+
+```bash
+docker run --rm -v kygsmoto_kygsmoto_data:/d -v "$PWD":/b alpine \
+  cp /d/kygsmoto.db /b/kygsmoto-$(date +%F).db
+```
 
 ## 7. Autoupdate from GitHub
 

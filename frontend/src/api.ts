@@ -453,12 +453,7 @@ export const api = {
     fd.append('replace_existing', String(replaceExisting))
     return request<WorkbookImportResult>('/imports/workbook', { method: 'POST', body: fd })
   },
-  importWorkbookLocal: async (path = 'KYGS APRIL 2025.xlsm', replaceExisting = true) => {
-    const fd = new FormData()
-    fd.append('path', path)
-    fd.append('replace_existing', String(replaceExisting))
-    return request<WorkbookImportResult>('/imports/workbook/local', { method: 'POST', body: fd })
-  },
+
   previewStockImport: async (file: File, mode: 'set' | 'adjust' | 'upsert' = 'set') => {
     const fd = new FormData()
     fd.append('file', file)
