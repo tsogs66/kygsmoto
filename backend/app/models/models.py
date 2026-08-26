@@ -125,6 +125,8 @@ class SaleItem(Base):
     quantity: Mapped[float] = mapped_column(Float, nullable=False)
     unit_price: Mapped[float] = mapped_column(Float, nullable=False)
     cost_price: Mapped[float] = mapped_column(Float, default=0.0)
+    # Peso amount taken off this line, before the order-level discount.
+    discount: Mapped[float] = mapped_column(Float, default=0.0)
     line_total: Mapped[float] = mapped_column(Float, nullable=False)
 
     sale: Mapped[Sale] = relationship(back_populates="items")
@@ -250,6 +252,7 @@ class JobLine(Base):
     product_name: Mapped[str] = mapped_column(String(250), nullable=False)
     quantity: Mapped[float] = mapped_column(Float, nullable=False)
     unit_price: Mapped[float] = mapped_column(Float, nullable=False)
+    discount: Mapped[float] = mapped_column(Float, default=0.0)
     added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     job: Mapped[Job] = relationship(back_populates="lines")
