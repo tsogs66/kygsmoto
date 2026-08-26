@@ -14,6 +14,8 @@ from app.models.models import (
     Category,
     Customer,
     ImportBatch,
+    HeldSale,
+    HeldSaleLine,
     Job,
     JobLine,
     Product,
@@ -25,6 +27,7 @@ from app.models.models import (
 )
 from app.schemas import (
     CategoryCreate,
+    HeldSaleCreate,
     JobCancel,
     JobCheckout,
     JobCreate,
@@ -1522,3 +1525,156 @@ def checkout_job(job_id: int, payload: JobCheckout, db: Session = Depends(get_db
     db.commit()
 
     return {"job": _job_out(_get_job(db, job_id)), "sale": sale_out}
+
+
+# ---------------------------------------------------------------------------
+# Held sales: a cart parked at the till, identified so it can be found again.
+# ---------------------------------------------------------------------------
+
+
+def _held_out(held: HeldSale) -> dict:
+    parts = labour = discount_total = 0.0
+    lines = []
+    for line in held.lines:
+        line_discount = float(line.discount or 0)
+        total = round(line.quantity * line.unit_price - line_discount, 2)
+        discount_total += line_discount
+        labour_line = _is_labour(line.sku)
+        lines.append({
+            "id": line.id,
+            "product_id": line.product_id,
+            "sku": line.sku,
+            "product_name": line.product_name,
+            "quantity": line.quantity,
+            "unit_price": line.unit_price,
+            "discount": line_discount,
+            "line_total": total,
+            "is_labour": labour_line,
+        })
+        if labour_line:
+            labour += total
+        else:
+            parts += total
+
+    held_for = None
+    if held.created_at:
+        held_for = int((datetime.utcnow() - held.created_at).total_seconds() // 60)
+
+    return {
+        "id": held.id,
+        "reference": held.reference,
+        "label": held.label or "",
+        "customer_id": held.customer_id,
+        "customer_name": held.customer_name or (held.customer.name if held.customer else ""),
+        "contact": held.contact or "",
+        "plate_no": held.plate_no or "",
+        "motorcycle": held.motorcycle or "",
+        "note": held.note or "",
+        "payment_method": held.payment_method,
+        "created_at": held.created_at,
+        "held_for_minutes": held_for,
+        "lines": lines,
+        "line_count": len(lines),
+        "parts_total": round(parts, 2),
+        "labour_total": round(labour, 2),
+        "discount_total": round(discount_total, 2),
+        "total": round(parts + labour, 2),
+    }
+
+
+def _get_held(db: Session, held_id: int) -> HeldSale:
+    held = (
+        db.query(HeldSale)
+        .options(joinedload(HeldSale.lines), joinedload(HeldSale.customer))
+        .filter(HeldSale.id == held_id)
+        .first()
+    )
+    if not held:
+        raise HTTPException(404, "Held sale not found")
+    return held
+
+
+@router.get("/holds")
+def list_holds(q: str = "", db: Session = Depends(get_db)):
+    """Everything parked at the till, oldest first so nothing is forgotten."""
+    query = db.query(HeldSale).options(
+        joinedload(HeldSale.lines), joinedload(HeldSale.customer)
+    )
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            HeldSale.reference.like(like) | HeldSale.label.like(like)
+            | HeldSale.customer_name.like(like) | HeldSale.plate_no.like(like)
+            | HeldSale.motorcycle.like(like)
+        )
+    holds = query.order_by(HeldSale.created_at).all()
+    out = [_held_out(h) for h in holds]
+    return {
+        "holds": out,
+        "count": len(out),
+        "total_value": round(sum(h["total"] for h in out), 2),
+    }
+
+
+@router.get("/holds/{held_id}")
+def get_hold(held_id: int, db: Session = Depends(get_db)):
+    return _held_out(_get_held(db, held_id))
+
+
+@router.post("/holds")
+def create_hold(payload: HeldSaleCreate, db: Session = Depends(get_db)):
+    if not payload.lines:
+        raise HTTPException(400, "Nothing to hold — add at least one item")
+
+    customer_id = payload.customer_id
+    if customer_id is None and payload.save_customer and (payload.customer_name or "").strip():
+        customer = Customer(
+            name=payload.customer_name.strip(),
+            phone=(payload.contact or "").strip() or None,
+            motorcycle_model=(payload.motorcycle or "").strip() or None,
+        )
+        db.add(customer)
+        db.flush()
+        customer_id = customer.id
+
+    held = HeldSale(
+        reference=_next_no(db, HeldSale, "reference", "HOLD"),
+        label=(payload.label or "").strip() or None,
+        customer_id=customer_id,
+        customer_name=(payload.customer_name or "").strip() or None,
+        contact=(payload.contact or "").strip() or None,
+        plate_no=(payload.plate_no or "").strip().upper() or None,
+        motorcycle=(payload.motorcycle or "").strip() or None,
+        note=(payload.note or "").strip() or None,
+        payment_method=payload.payment_method,
+    )
+
+    for line in payload.lines:
+        product = db.get(Product, line.product_id)
+        if not product:
+            raise HTTPException(400, f"Product {line.product_id} not found")
+        unit_price = line.unit_price if line.unit_price is not None else product.sell_price
+        if line.discount > line.quantity * unit_price:
+            raise HTTPException(400, "Discount cannot be more than the line total")
+        held.lines.append(HeldSaleLine(
+            product_id=product.id,
+            sku=product.sku,
+            product_name=product.name,
+            quantity=line.quantity,
+            unit_price=unit_price,
+            discount=line.discount,
+        ))
+
+    db.add(held)
+    db.commit()
+    return _held_out(_get_held(db, held.id))
+
+
+@router.delete("/holds/{held_id}")
+def delete_hold(held_id: int, db: Session = Depends(get_db)):
+    """Discard a hold, or clear it once its cart has been resumed at the till."""
+    held = _get_held(db, held_id)
+    reference = held.reference
+    db.delete(held)
+    db.commit()
+    return {"deleted": True, "reference": reference}

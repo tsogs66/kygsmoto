@@ -259,6 +259,53 @@ class JobLine(Base):
     product: Mapped[Product] = relationship()
 
 
+class HeldSale(Base):
+    """A cart parked mid-transaction at the till.
+
+    A rider steps away to fetch cash, or a second customer needs serving first.
+    The basket is set aside with enough detail to identify whose it is, and
+    resumed later. Nothing here touches stock: a hold is not a sale, and the
+    parts stay available to the counter until it is actually rung up.
+    """
+
+    __tablename__ = "held_sales"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    reference: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    label: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    customer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("customers.id"), nullable=True)
+    customer_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    contact: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    plate_no: Mapped[Optional[str]] = mapped_column(String(30), nullable=True, index=True)
+    motorcycle: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    payment_method: Mapped[str] = mapped_column(String(40), default="cash")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    customer: Mapped[Optional[Customer]] = relationship()
+    lines: Mapped[list["HeldSaleLine"]] = relationship(
+        back_populates="held_sale", cascade="all, delete-orphan"
+    )
+
+
+class HeldSaleLine(Base):
+    __tablename__ = "held_sale_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    held_sale_id: Mapped[int] = mapped_column(
+        ForeignKey("held_sales.id"), nullable=False, index=True
+    )
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    sku: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    product_name: Mapped[str] = mapped_column(String(250), nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    unit_price: Mapped[float] = mapped_column(Float, nullable=False)
+    discount: Mapped[float] = mapped_column(Float, default=0.0)
+
+    held_sale: Mapped[HeldSale] = relationship(back_populates="lines")
+    product: Mapped[Product] = relationship()
+
+
 class AppMeta(Base):
     __tablename__ = "app_meta"
 
