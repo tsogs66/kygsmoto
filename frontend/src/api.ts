@@ -21,7 +21,127 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json()
 }
 
+
+// ---------------------------------------------------------------- analytics
+
+export interface MoverRow {
+  product_id: number
+  sku: string
+  name: string
+  supplier: string
+  unit_cost: number
+  sell_price: number
+  on_hand: number
+  stock_value: number
+  sold_qty: number
+  revenue: number
+  demand_value: number
+  gross_profit: number
+  daily_rate: number
+  monthly_rate: number
+  demand_pattern: string
+  method: string
+  abc: string
+  xyz: string
+  abc_xyz: string
+  movement: string
+  last_sold: string | null
+  lead_time_days: number
+  review_days: number
+  safety_stock: number
+  reorder_point: number
+  reorder_level: number
+  eoq: number
+  days_of_cover: number | null
+  urgency: number
+  value_share: number
+  cumulative_share: number
+}
+
+export interface ReorderRow extends MoverRow {
+  suggested_qty: number
+  order_cost: number
+  projected_stockout: string | null
+  reason: string
+}
+
+export interface AnalyticsWindow {
+  from: string
+  to: string
+  days: number
+  measured_from?: string
+}
+
+export interface MoversOut {
+  direction: string
+  window: AnalyticsWindow
+  count: number
+  items: MoverRow[]
+}
+
+export interface ReorderOut {
+  window: AnalyticsWindow
+  count: number
+  total_cost: number
+  by_supplier: { supplier: string; supplier_id: number | null; lines: number; units: number; cost: number }[]
+  suggestions: ReorderRow[]
+}
+
+export interface AbcOut {
+  window: AnalyticsWindow
+  summary: { class: string; items: number; revenue: number; stock_value: number; gross_profit: number }[]
+  matrix: { cell: string; items: number; policy: string }[]
+  items: MoverRow[]
+}
+
+export interface OverviewOut {
+  window: AnalyticsWindow
+  sku_count: number
+  stock_value: number
+  movement: Record<string, number>
+  dead_stock_value: number
+  dead_stock_pct: number
+  out_of_stock: number
+  fast_movers_out_of_stock: number
+  below_reorder_point: number
+  reorder_lines: number
+  reorder_cost: number
+  stock_turnover_annualised: number
+  urgent: ReorderRow[]
+  at_risk_fast_movers: MoverRow[]
+}
+
+export interface ProductForecast {
+  product: {
+    id: number; sku: string; name: string; stock_qty: number
+    cost_price: number; sell_price: number; reorder_level: number; supplier: string
+  }
+  window: AnalyticsWindow
+  pattern: { pattern: string; method?: string; adi?: number; cv2?: number }
+  daily_rate: number
+  forecast: { next_7d: number; next_30d: number; next_90d: number }
+  replenishment: {
+    lead_time_days: number; review_days: number; safety_stock: number
+    reorder_point: number; economic_order_qty: number
+    days_of_cover: number | null; projected_stockout: string | null
+  }
+  weekly_demand: { week_of: string; qty: number }[]
+  weekday_seasonality: { day: string; index: number }[]
+}
+
 export const api = {
+  movers: (direction: 'fast' | 'slow' | 'dead', days = 90, limit = 100) =>
+    request<MoversOut>(`/analytics/movers?direction=${direction}&days=${days}&limit=${limit}`),
+  reorder: (days = 90, supplierId?: number) => {
+    const q = new URLSearchParams({ days: String(days) })
+    if (supplierId) q.set('supplier_id', String(supplierId))
+    return request<ReorderOut>(`/analytics/reorder?${q}`)
+  },
+  abc: (days = 90) => request<AbcOut>(`/analytics/abc?days=${days}`),
+  stockOverview: (days = 90) => request<OverviewOut>(`/analytics/overview?days=${days}`),
+  productForecast: (id: number, days = 180) =>
+    request<ProductForecast>(`/analytics/products/${id}/forecast?days=${days}`),
+
   dashboard: (year?: number, month?: number) => {
     const q = new URLSearchParams()
     if (year) q.set('year', String(year))

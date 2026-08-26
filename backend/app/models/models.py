@@ -37,6 +37,10 @@ class Supplier(Base):
     email: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
     address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Replenishment planning: how long an order takes to arrive, and how often we
+    # order from this supplier. Both feed the reorder point calculation.
+    lead_time_days: Mapped[float] = mapped_column(Float, default=7.0)
+    order_cycle_days: Mapped[float] = mapped_column(Float, default=30.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     products: Mapped[list["Product"]] = relationship(back_populates="supplier")

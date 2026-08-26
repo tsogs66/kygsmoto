@@ -31,3 +31,11 @@ def ensure_sqlite_columns() -> None:
             conn.execute(text("ALTER TABLE purchases ADD COLUMN receipt_filename VARCHAR(255)"))
         if "receipt_path" not in cols:
             conn.execute(text("ALTER TABLE purchases ADD COLUMN receipt_path VARCHAR(500)"))
+
+        supplier_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(suppliers)")).fetchall()}
+        if "lead_time_days" not in supplier_cols:
+            conn.execute(text("ALTER TABLE suppliers ADD COLUMN lead_time_days FLOAT DEFAULT 7.0"))
+            conn.execute(text("UPDATE suppliers SET lead_time_days = 7.0 WHERE lead_time_days IS NULL"))
+        if "order_cycle_days" not in supplier_cols:
+            conn.execute(text("ALTER TABLE suppliers ADD COLUMN order_cycle_days FLOAT DEFAULT 30.0"))
+            conn.execute(text("UPDATE suppliers SET order_cycle_days = 30.0 WHERE order_cycle_days IS NULL"))
