@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api, peso } from '../api'
-import type { Customer, Product, Sale } from '../api'
+import type { Customer, HeldSale, Product, Sale } from '../api'
 import { useSortableRows } from '../hooks/useSortableRows'
 import CustomerSelect from '../components/CustomerSelect'
 
@@ -25,6 +25,12 @@ export default function SalesPage() {
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [error, setError] = useState('')
   const [ok, setOk] = useState('')
+  const [holds, setHolds] = useState<HeldSale[]>([])
+  const [showHold, setShowHold] = useState(false)
+  const [holdInfo, setHoldInfo] = useState({
+    label: '', customer_name: '', contact: '', plate_no: '', motorcycle: '', note: '',
+  })
+  const [holdSaveCustomer, setHoldSaveCustomer] = useState(false)
   const [saleDate, setSaleDate] = useState(() => {
     const d = new Date()
     const pad = (n: number) => String(n).padStart(2, '0')
@@ -40,6 +46,7 @@ export default function SalesPage() {
       if (period === 'monthly') params.set('month', String(month))
     }
     const qs = params.toString() ? `?${params}` : ''
+    api.holds().then((h) => setHolds(h.holds)).catch(() => undefined)
     Promise.all([api.products(), api.customers(), api.sales(qs)])
       .then(([p, c, s]) => {
         setProducts(p.filter((x) => x.is_active))
@@ -108,6 +115,70 @@ export default function SalesPage() {
     setQty('1')
   }
 
+  const selectedCustomer = customers.find((c) => c.id === customerId) || null
+
+  const holdSale = async () => {
+    if (!cart.length) {
+      setError('Add at least one item before holding')
+      return
+    }
+    setError('')
+    try {
+      const held = await api.createHold({
+        ...holdInfo,
+        customer_id: customerId,
+        customer_name: holdInfo.customer_name || selectedCustomer?.name || '',
+        payment_method: payment,
+        save_customer: customerId ? false : holdSaveCustomer,
+        lines: cart.map((l) => ({
+          product_id: l.product.id,
+          quantity: l.quantity,
+          unit_price: l.product.sell_price,
+          discount: l.discount || 0,
+        })),
+      })
+      setOk(`Held as ${held.reference}${held.customer_name ? ` for ${held.customer_name}` : ''}`)
+      setCart([])
+      setCustomerId(null)
+      setShowHold(false)
+      setHoldSaveCustomer(false)
+      setHoldInfo({ label: '', customer_name: '', contact: '', plate_no: '',
+                    motorcycle: '', note: '' })
+      load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not hold the sale')
+    }
+  }
+
+  /** Put a held basket back on the till, and clear the hold. */
+  const resumeHold = async (held: HeldSale) => {
+    const lines = held.lines
+      .map((l) => {
+        const product = products.find((p) => p.id === l.product_id)
+        return product
+          ? { product, quantity: l.quantity, discount: l.discount || 0 }
+          : null
+      })
+      .filter((l): l is CartLine => l !== null)
+
+    if (lines.length !== held.lines.length) {
+      setError('Some held items are no longer in inventory — check the basket')
+    }
+    setCart(lines)
+    setCustomerId(held.customer_id)
+    setPayment(held.payment_method || 'cash')
+    await api.deleteHold(held.id)
+    setOk(`Resumed ${held.reference}`)
+    load()
+  }
+
+  const discardHold = async (held: HeldSale) => {
+    if (!window.confirm(`Discard ${held.reference}? The basket is lost.`)) return
+    await api.deleteHold(held.id)
+    setOk(`Discarded ${held.reference}`)
+    load()
+  }
+
   const checkout = async (e: FormEvent) => {
     e.preventDefault()
     setError('')
@@ -147,6 +218,51 @@ export default function SalesPage() {
 
       {error && <div className="error-banner">{error}</div>}
       {ok && <div className="success-banner">{ok}</div>}
+
+      {holds.length > 0 && (
+        <div className="panel" style={{ marginBottom: '1rem' }}>
+          <div className="page-header">
+            <div>
+              <h2>Held sales ({holds.length})</h2>
+              <p className="muted">Parked baskets — oldest first. No stock is reserved.</p>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Ref</th><th>Customer</th><th>Why</th>
+                  <th className="num">Lines</th><th className="num">Value</th>
+                  <th className="num">Waiting</th><th />
+                </tr>
+              </thead>
+              <tbody>
+                {holds.map((h) => (
+                  <tr key={h.id}>
+                    <td><strong>{h.reference}</strong></td>
+                    <td>
+                      {h.customer_name || 'Walk-in'}
+                      <div className="muted">
+                        {[h.plate_no, h.motorcycle, h.contact].filter(Boolean).join(' · ')}
+                      </div>
+                    </td>
+                    <td className="muted">{h.label || '—'}</td>
+                    <td className="num">{h.line_count}</td>
+                    <td className="num">{peso(h.total)}</td>
+                    <td className="num">{h.held_for_minutes ?? 0}m</td>
+                    <td className="nowrap">
+                      <button className="btn" type="button"
+                              onClick={() => resumeHold(h)}>Resume</button>
+                      <button className="btn secondary" type="button"
+                              onClick={() => discardHold(h)}>Discard</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-2">
         <form className="panel" onSubmit={checkout}>
@@ -272,10 +388,77 @@ export default function SalesPage() {
                 </span>
               )}
             </strong>
-            <button className="btn" type="submit">
-              Complete Sale
-            </button>
+            <span className="toolbar">
+              <button className="btn secondary" type="button"
+                      onClick={() => setShowHold((v) => !v)}>
+                {showHold ? 'Cancel hold' : 'Hold sale'}
+              </button>
+              <button className="btn" type="submit">
+                Complete Sale
+              </button>
+            </span>
           </div>
+          {showHold && (
+            <div className="panel" style={{ marginTop: '1rem' }}>
+              <h3>Hold this sale</h3>
+              <p className="muted">
+                Who is it for? Enough detail to find it again when they come back.
+              </p>
+              <div className="grid grid-2">
+                <label className="label">Customer
+                  <CustomerSelect
+                    customers={customers}
+                    value={customerId}
+                    walkInName={holdInfo.customer_name}
+                    onSelect={(c) => {
+                      setCustomerId(c ? c.id : null)
+                      if (c) {
+                        setHoldInfo((h) => ({
+                          ...h,
+                          customer_name: c.name,
+                          contact: c.phone || h.contact,
+                          motorcycle: c.motorcycle_model || h.motorcycle,
+                        }))
+                        setHoldSaveCustomer(false)
+                      }
+                    }}
+                    onWalkInName={(name) =>
+                      setHoldInfo((h) => ({ ...h, customer_name: name }))}
+                    onCreated={(c) => setCustomers((prev) => [...prev, c])}
+                  />
+                </label>
+                <label className="label">Contact number
+                  <input value={holdInfo.contact}
+                         onChange={(e) => setHoldInfo({ ...holdInfo, contact: e.target.value })} />
+                </label>
+                <label className="label">Plate number
+                  <input value={holdInfo.plate_no}
+                         onChange={(e) => setHoldInfo({ ...holdInfo, plate_no: e.target.value })} />
+                </label>
+                <label className="label">Motorcycle
+                  <input value={holdInfo.motorcycle}
+                         onChange={(e) =>
+                           setHoldInfo({ ...holdInfo, motorcycle: e.target.value })} />
+                </label>
+              </div>
+              <label className="label">Why is it on hold?
+                <input placeholder="e.g. gone to the ATM, waiting for a part"
+                       value={holdInfo.label}
+                       onChange={(e) => setHoldInfo({ ...holdInfo, label: e.target.value })} />
+              </label>
+              {!customerId && holdInfo.customer_name.trim() && (
+                <label className="label" style={{ display: 'flex', gap: '0.5rem',
+                                                  alignItems: 'center' }}>
+                  <input type="checkbox" checked={holdSaveCustomer} style={{ width: 'auto' }}
+                         onChange={(e) => setHoldSaveCustomer(e.target.checked)} />
+                  <span>Save “{holdInfo.customer_name.trim()}” as a customer</span>
+                </label>
+              )}
+              <button className="btn" type="button" onClick={holdSale}>
+                Hold {peso(total)}
+              </button>
+            </div>
+          )}
         </form>
 
         <div className="panel">

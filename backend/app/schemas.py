@@ -502,3 +502,25 @@ class JobCheckout(BaseModel):
     payment_status: str = "paid"
     discount: float = 0.0
     allow_negative_stock: bool = False
+
+# ---- Held sales ----
+
+
+class HeldSaleLineIn(BaseModel):
+    product_id: int
+    quantity: float = Field(gt=0)
+    unit_price: Optional[float] = None
+    discount: float = Field(default=0.0, ge=0)
+
+
+class HeldSaleCreate(BaseModel):
+    label: Optional[str] = None
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    contact: Optional[str] = None
+    plate_no: Optional[str] = None
+    motorcycle: Optional[str] = None
+    note: Optional[str] = None
+    payment_method: str = "cash"
+    save_customer: bool = False
+    lines: list[HeldSaleLineIn]

@@ -198,7 +198,69 @@ export interface JobCreateIn {
   lines?: { product_id: number; quantity: number; unit_price?: number; discount?: number }[]
 }
 
+
+// ------------------------------------------------------------ held sales
+
+export interface HeldLine {
+  id: number
+  product_id: number
+  sku: string | null
+  product_name: string
+  quantity: number
+  unit_price: number
+  discount: number
+  line_total: number
+  is_labour: boolean
+}
+
+export interface HeldSale {
+  id: number
+  reference: string
+  label: string
+  customer_id: number | null
+  customer_name: string
+  contact: string
+  plate_no: string
+  motorcycle: string
+  note: string
+  payment_method: string
+  created_at: string
+  held_for_minutes: number | null
+  lines: HeldLine[]
+  line_count: number
+  parts_total: number
+  labour_total: number
+  discount_total: number
+  total: number
+}
+
+export interface HeldSaleCreateIn {
+  label?: string
+  customer_id?: number | null
+  customer_name?: string
+  contact?: string
+  plate_no?: string
+  motorcycle?: string
+  note?: string
+  payment_method?: string
+  save_customer?: boolean
+  lines: { product_id: number; quantity: number; unit_price?: number; discount?: number }[]
+}
+
 export const api = {
+  holds: (q = '') =>
+    request<{ holds: HeldSale[]; count: number; total_value: number }>(
+      `/holds${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+  hold: (id: number) => request<HeldSale>(`/holds/${id}`),
+  createHold: (body: HeldSaleCreateIn) =>
+    request<HeldSale>('/holds', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  deleteHold: (id: number) =>
+    request<{ deleted: boolean; reference: string }>(`/holds/${id}`, { method: 'DELETE' }),
+
   jobBoard: () => request<JobBoard>('/jobs/board'),
   jobs: (status = 'open', q = '') => {
     const p = new URLSearchParams({ status })
