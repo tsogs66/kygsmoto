@@ -204,7 +204,9 @@ class Job(Base):
 
     Collects the parts and labour for one bike while work is under way, then
     converts into a Sale at checkout. Stock moves at checkout and nowhere else,
-    so a bike waiting in the queue never holds parts the counter could sell.
+    and a ticket reserves nothing: parts for a bike in the queue stay available
+    to the counter. A ticket does respect what a held sale has claimed, so
+    checkout warns before spending someone else's parked basket.
     """
 
     __tablename__ = "jobs"
@@ -264,8 +266,14 @@ class HeldSale(Base):
 
     A rider steps away to fetch cash, or a second customer needs serving first.
     The basket is set aside with enough detail to identify whose it is, and
-    resumed later. Nothing here touches stock: a hold is not a sale, and the
-    parts stay available to the counter until it is actually rung up.
+    resumed later.
+
+    A hold *reserves* the parts in it. No stock movement is written — the parts
+    are still on the shelf, so `Product.stock_qty` keeps agreeing with the
+    stock-take — but the quantities on these lines are counted as claimed, and
+    what the counter may sell is `stock_qty` minus everything held. Deleting
+    the hold releases the claim; there is no counter to keep in step. See
+    `app.services.reservations`.
     """
 
     __tablename__ = "held_sales"

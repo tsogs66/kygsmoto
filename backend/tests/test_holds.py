@@ -77,7 +77,11 @@ class TestHolding:
         assert held["label"] == "Gone to the ATM"
 
     def test_holding_does_not_touch_stock(self, client, shop):
-        """A hold is not a sale — the parts stay available to the counter."""
+        """A hold is not a sale — the parts are still on the shelf.
+
+        They are reserved rather than sold, so the stock count stays true to
+        the shelf while the basket waits. See test_reservations.py.
+        """
         before = _stock(client, shop["part_id"])
         _hold(client, shop)
         assert _stock(client, shop["part_id"]) == before
@@ -183,9 +187,14 @@ class TestListingAndResuming:
         assert _stock(client, shop["part_id"]) == before
 
     def test_resuming_and_selling_moves_stock_once(self, client, shop):
-        """The till rebuilds the cart from the hold, sells, then clears it."""
+        """The till rebuilds the cart from the hold, clears it, then sells.
+
+        Clearing comes first: while the hold stands it has the parts reserved,
+        and the sale would rightly refuse to spend them.
+        """
         before = _stock(client, shop["part_id"])
         held = _hold(client, shop)
+        client.delete(f"/api/holds/{held['id']}")
 
         sale = client.post("/api/sales", json={
             "customer_id": held["customer_id"],
@@ -195,7 +204,6 @@ class TestListingAndResuming:
                 for l in held["lines"]
             ],
         }).json()
-        client.delete(f"/api/holds/{held['id']}")
 
         assert sale["total"] == held["total"]
         assert _stock(client, shop["part_id"]) == before - 2

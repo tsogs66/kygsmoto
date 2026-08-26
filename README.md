@@ -31,6 +31,8 @@ The original Excel+VBA pattern (seen in open systems like [Sales_Inventory_Track
 - **Sales report upload**: preview matches, then import and deduct stock from written sales files
 - Empty DB on first start — import the KYGS workbook / stock CSV, or add products manually (no hard-coded demo sales/inventory)
 - **Backdate sales** on POS with a sale date/time picker
+- **Job queue** for bikes in the shop — parts and labour on one ticket, stock moves at checkout
+- **Held sales** — park a basket at the till, identified by customer/plate, and it *reserves* its parts
 - **Handwritten sales photo scan** (OCR) with editable review — correct qty/price/date and select inventory items before import
 - PWA install for Android; Docker image for Proxmox LXC (includes Tesseract OCR)
 
@@ -190,9 +192,42 @@ When uploading a full `.xlsm` for sales, the importer prefers the **SALES** shee
 | GET | `/api/reports/inventory` | Inventory valuation & movements |
 | GET/POST | `/api/products` | Inventory CRUD |
 | POST | `/api/sales` | Create sale (deduct stock) |
+| GET/POST | `/api/holds` | Park a basket at the till; reserves its parts |
+| DELETE | `/api/holds/{id}` | Discard or clear a hold, releasing its claim |
+| GET/POST | `/api/jobs` | Job tickets for bikes in the shop |
+| POST | `/api/jobs/{id}/checkout` | Turn a finished job into a sale |
 | POST | `/api/purchases` | Receive stock |
 | POST | `/api/imports/sales/preview` | Preview sales file |
 | POST | `/api/imports/sales` | Import sales file & update stock |
+
+## Held sales reserve stock
+
+A basket parked at the till is a promise, so the parts in it stop being free
+to sell. Nothing moves: the parts are still on the shelf, and `stock_qty`
+keeps agreeing with the stock-take. What changes is what the counter may
+spend:
+
+```text
+available = stock_qty − everything held
+```
+
+The claim is derived from the hold's own lines, so there is no counter to
+keep in step — discard the hold and the claim goes with it. Labour reserves
+nothing. Products report `reserved_qty` and `available_qty`, the POS item
+list shows what is free, and a job ticket flags parts a held basket has
+claimed.
+
+Two guards enforce it, and both can be overridden with `allow_shortfall`
+after the counter has been told what they are spending:
+
+- A **sale** is refused only when it would eat into a reservation. With
+  nothing held the till behaves exactly as before, negative stock included —
+  parts often arrive ahead of their paperwork.
+- A **hold** is refused when the shop cannot back it, since a promise over
+  stock that is not there is not a promise.
+
+Job checkout keeps its own `allow_negative_stock` confirmation, which now
+also covers parts reserved at the till.
 
 ## Project layout
 

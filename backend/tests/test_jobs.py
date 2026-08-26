@@ -159,7 +159,7 @@ class TestShortages:
                        lines=[{"product_id": shop["scarce_id"], "quantity": 999}])
         res = client.post(f"/api/jobs/{job['id']}/checkout", json={})
         assert res.status_code == 409
-        assert "Not enough stock" in res.json()["detail"]
+        assert "Not enough free stock" in res.json()["detail"]
 
         still = client.get(f"/api/jobs/{job['id']}").json()
         assert still["status"] in ("queued", "in_progress", "ready")

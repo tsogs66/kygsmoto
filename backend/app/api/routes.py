@@ -68,6 +68,7 @@ from app.services.import_sales import import_purchase_rows, import_sales_file, i
 from app.services.import_stock import import_stock_file, preview_stock_file
 from app.services.kygs_import import import_kygs_workbook
 from app.services.ocr_sales import preview_sales_photo, suggest_products
+from app.services import reservations
 from app.services.seed import purge_hardcoded_demo
 from app.services.stock import apply_stock_change, stock_status
 
@@ -88,7 +89,7 @@ def admin_purge_demo(force: bool = Query(False), db: Session = Depends(get_db)):
     return purge_hardcoded_demo(db)
 
 
-def _product_out(p: Product) -> ProductOut:
+def _product_out(p: Product, reserved: float = 0.0) -> ProductOut:
     return ProductOut(
         id=p.id,
         sku=p.sku,
@@ -109,6 +110,8 @@ def _product_out(p: Product) -> ProductOut:
         category_name=p.category.name if p.category else None,
         supplier_name=p.supplier.name if p.supplier else None,
         stock_status=stock_status(p),
+        reserved_qty=round(reserved, 4),
+        available_qty=round(reservations.available_qty(p, reserved), 4),
     )
 
 
@@ -251,7 +254,8 @@ def list_products(
     products = query.order_by(Product.name).all()
     if low_stock:
         products = [p for p in products if stock_status(p) in {"low", "out"}]
-    return [_product_out(p) for p in products]
+    reserved = reservations.reserved_map(db, [p.id for p in products])
+    return [_product_out(p, reserved.get(p.id, 0.0)) for p in products]
 
 
 @router.post("/products", response_model=ProductOut)
@@ -267,7 +271,7 @@ def create_product(payload: ProductCreate, db: Session = Depends(get_db)):
         .options(joinedload(Product.category), joinedload(Product.supplier))
         .get(obj.id)
     )
-    return _product_out(obj)
+    return _product_out(obj, reservations.reserved_for(db, obj.id))
 
 
 @router.put("/products/{product_id}", response_model=ProductOut)
@@ -283,7 +287,7 @@ def update_product(product_id: int, payload: ProductUpdate, db: Session = Depend
         .options(joinedload(Product.category), joinedload(Product.supplier))
         .get(product_id)
     )
-    return _product_out(obj)
+    return _product_out(obj, reservations.reserved_for(db, product_id))
 
 
 @router.post("/products/{product_id}/adjust", response_model=ProductOut)
@@ -298,7 +302,7 @@ def adjust_stock(product_id: int, payload: StockAdjust, db: Session = Depends(ge
         .options(joinedload(Product.category), joinedload(Product.supplier))
         .get(product_id)
     )
-    return _product_out(obj)
+    return _product_out(obj, reservations.reserved_for(db, product_id))
 
 
 @router.delete("/products/{product_id}")
@@ -377,10 +381,45 @@ def get_sale(sale_id: int, db: Session = Depends(get_db)):
     return _sale_out(sale)
 
 
+def _refuse_if_reserved(
+    db: Session,
+    lines: list[tuple[Product, float]],
+    allow_shortfall: bool,
+    only_when_reserved: bool = True,
+    verb: str = "sell",
+) -> None:
+    """Stop a basket spending stock another basket is already holding.
+
+    For a sale this bites only where a hold exists: with nothing parked at
+    the till the check finds nothing and the sale behaves exactly as it
+    always has, negative stock included. Parking a basket is stricter —
+    `only_when_reserved=False` — because a hold over stock the shop does not
+    have is not a promise it can keep.
+    """
+    if allow_shortfall:
+        return
+    problems = reservations.unreserved_check(db, lines, only_when_reserved)
+    if problems:
+        raise HTTPException(
+            409,
+            "Not free to " + verb + " — "
+            + "; ".join(problems[:3])
+            + ("…" if len(problems) > 3 else "")
+            + f". Release a hold, reduce the line, or confirm to {verb} anyway.",
+        )
+
+
 @router.post("/sales", response_model=SaleOut)
 def create_sale(payload: SaleCreate, db: Session = Depends(get_db)):
     if not payload.items:
         raise HTTPException(400, "Sale requires at least one item")
+    checked: list[tuple[Product, float]] = []
+    for item in payload.items:
+        product = db.get(Product, item.product_id)
+        if not product:
+            raise HTTPException(400, f"Product {item.product_id} not found")
+        checked.append((product, item.quantity))
+    _refuse_if_reserved(db, checked, payload.allow_shortfall)
     sale = Sale(
         invoice_no=_next_no(db, Sale, "invoice_no", "SI"),
         sale_date=payload.sale_date or datetime.utcnow(),
@@ -393,10 +432,7 @@ def create_sale(payload: SaleCreate, db: Session = Depends(get_db)):
         source="manual",
     )
     subtotal = 0.0
-    for item in payload.items:
-        product = db.query(Product).get(item.product_id)
-        if not product:
-            raise HTTPException(400, f"Product {item.product_id} not found")
+    for item, (product, _qty) in zip(payload.items, checked):
         unit_price = item.unit_price if item.unit_price is not None else product.sell_price
         gross = item.quantity * unit_price
         discount = min(max(item.discount, 0.0), gross)   # never below zero
@@ -1204,12 +1240,12 @@ JOB_TRANSITIONS = {
 JOB_STAMP = {"in_progress": "started_at", "ready": "ready_at"}
 
 
-def _is_labour(sku: Optional[str]) -> bool:
-    """Labour follows the shop's existing convention: SKU starting with LABOR."""
-    return str(sku or "").upper().startswith("LABOR")
+# Labour follows the shop's existing convention: a SKU starting with LABOR.
+_is_labour = reservations.is_labour
 
 
-def _job_out(job: Job) -> dict:
+def _job_out(job: Job, reserved: Optional[dict[int, float]] = None) -> dict:
+    reserved = reserved or {}
     parts = labour = discount_total = 0.0
     lines = []
     for line in job.lines:
@@ -1218,8 +1254,11 @@ def _job_out(job: Job) -> dict:
         discount_total += line_discount
         on_hand = float(line.product.stock_qty or 0) if line.product else 0.0
         labour_line = _is_labour(line.sku)
+        # Stock a parked basket has claimed is not this job's to spend.
+        held = 0.0 if labour_line else float(reserved.get(line.product_id, 0.0))
+        free = on_hand - held
         # Flag shortages now so the counter is not surprised at payment.
-        short = (not labour_line) and on_hand < line.quantity
+        short = (not labour_line) and free < line.quantity
         lines.append({
             "id": line.id,
             "product_id": line.product_id,
@@ -1231,6 +1270,8 @@ def _job_out(job: Job) -> dict:
             "line_total": total,
             "is_labour": labour_line,
             "on_hand": on_hand,
+            "reserved": round(held, 4),
+            "available": round(free, 4),
             "short": short,
         })
         if labour_line:
@@ -1275,6 +1316,17 @@ def _job_out(job: Job) -> dict:
     }
 
 
+def _jobs_reserved(db: Session, jobs: list[Job]) -> dict[int, float]:
+    """One aggregate covering every part on these tickets."""
+    ids = {line.product_id for job in jobs for line in job.lines}
+    return reservations.reserved_map(db, ids) if ids else {}
+
+
+def _job_view(db: Session, job: Job) -> dict:
+    """One job, with whatever the till currently has spoken for."""
+    return _job_out(job, _jobs_reserved(db, [job]))
+
+
 def _get_job(db: Session, job_id: int) -> Job:
     job = (
         db.query(Job)
@@ -1302,7 +1354,8 @@ def job_board(db: Session = Depends(get_db)):
         .filter(Job.status.in_(OPEN_JOB_STATUSES))
         .all()
     )
-    out = [_job_out(job) for job in jobs]
+    reserved = _jobs_reserved(db, jobs)
+    out = [_job_out(job, reserved) for job in jobs]
     # Urgent first, then closest to release, then longest waiting.
     stage = {"ready": 0, "in_progress": 1, "queued": 2}
     out.sort(key=lambda j: (0 if j["priority"] == "urgent" else 1,
@@ -1339,12 +1392,13 @@ def list_jobs(
             | Job.plate_no.like(like) | Job.motorcycle.like(like)
         )
     jobs = query.order_by(Job.id.desc()).limit(limit).all()
-    return {"jobs": [_job_out(job) for job in jobs]}
+    reserved = _jobs_reserved(db, jobs)
+    return {"jobs": [_job_out(job, reserved) for job in jobs]}
 
 
 @router.get("/jobs/{job_id}")
 def get_job(job_id: int, db: Session = Depends(get_db)):
-    return _job_out(_get_job(db, job_id))
+    return _job_view(db, _get_job(db, job_id))
 
 
 @router.post("/jobs")
@@ -1382,7 +1436,7 @@ def create_job(payload: JobCreate, db: Session = Depends(get_db)):
 
     db.add(job)
     db.commit()
-    return _job_out(_get_job(db, job.id))
+    return _job_view(db, _get_job(db, job.id))
 
 
 def _build_job_line(db: Session, line: JobLineIn) -> JobLine:
@@ -1429,7 +1483,7 @@ def update_job(job_id: int, payload: JobUpdate, db: Session = Depends(get_db)):
     for field, value in data.items():
         setattr(job, field, value)
     db.commit()
-    return _job_out(_get_job(db, job_id))
+    return _job_view(db, _get_job(db, job_id))
 
 
 @router.post("/jobs/{job_id}/lines")
@@ -1439,7 +1493,7 @@ def add_job_line(job_id: int, payload: JobLineIn, db: Session = Depends(get_db))
         raise HTTPException(409, f"Cannot add work to a {job.status} job")
     job.lines.append(_build_job_line(db, payload))
     db.commit()
-    return _job_out(_get_job(db, job_id))
+    return _job_view(db, _get_job(db, job_id))
 
 
 @router.delete("/jobs/{job_id}/lines/{line_id}")
@@ -1452,7 +1506,7 @@ def remove_job_line(job_id: int, line_id: int, db: Session = Depends(get_db)):
     if line:
         db.delete(line)
         db.commit()
-    return _job_out(_get_job(db, job_id))
+    return _job_view(db, _get_job(db, job_id))
 
 
 @router.post("/jobs/{job_id}/cancel")
@@ -1464,7 +1518,7 @@ def cancel_job(job_id: int, payload: JobCancel, db: Session = Depends(get_db)):
     job.cancelled_at = datetime.utcnow()
     job.cancel_reason = payload.reason
     db.commit()
-    return _job_out(_get_job(db, job_id))
+    return _job_view(db, _get_job(db, job_id))
 
 
 @router.post("/jobs/{job_id}/checkout")
@@ -1476,14 +1530,18 @@ def checkout_job(job_id: int, payload: JobCheckout, db: Session = Depends(get_db
     if not job.lines:
         raise HTTPException(400, "Add parts or labour before taking payment")
 
-    snapshot = _job_out(job)
+    snapshot = _job_view(db, job)
     if snapshot["short_lines"] and not payload.allow_negative_stock:
-        short = [l["product_name"] for l in snapshot["lines"] if l["short"]]
+        short = [
+            l["product_name"] + (" (held at the till)" if l["reserved"] else "")
+            for l in snapshot["lines"] if l["short"]
+        ]
         raise HTTPException(
             409,
-            "Not enough stock for: " + ", ".join(short[:3])
+            "Not enough free stock for: " + ", ".join(short[:3])
             + ("…" if len(short) > 3 else "")
-            + ". Receive stock, reduce the line, or confirm to sell anyway.",
+            + ". Receive stock, release a hold, reduce the line,"
+            " or confirm to sell anyway.",
         )
 
     # Reuse the shop's own sale path so stock, labour and numbering behave
@@ -1494,6 +1552,7 @@ def checkout_job(job_id: int, payload: JobCheckout, db: Session = Depends(get_db
         payment_status=payload.payment_status,
         discount=payload.discount,
         notes=f"{job.job_no} {job.motorcycle or ''}".strip(),
+        allow_shortfall=True,   # already answered by the check just above
         items=[
             SaleItemIn(product_id=line.product_id, quantity=line.quantity,
                        unit_price=line.unit_price, discount=float(line.discount or 0))
@@ -1507,7 +1566,7 @@ def checkout_job(job_id: int, payload: JobCheckout, db: Session = Depends(get_db
     job.sale_id = sale_out["id"] if isinstance(sale_out, dict) else sale_out.id
     db.commit()
 
-    return {"job": _job_out(_get_job(db, job_id)), "sale": sale_out}
+    return {"job": _job_view(db, _get_job(db, job_id)), "sale": sale_out}
 
 
 # ---------------------------------------------------------------------------
@@ -1523,6 +1582,9 @@ def _held_out(held: HeldSale) -> dict:
         total = round(line.quantity * line.unit_price - line_discount, 2)
         discount_total += line_discount
         labour_line = _is_labour(line.sku)
+        on_hand = float(line.product.stock_qty or 0) if line.product else 0.0
+        # A stock-take can shrink the shelf under a basket already parked.
+        short = (not labour_line) and on_hand < line.quantity
         lines.append({
             "id": line.id,
             "product_id": line.product_id,
@@ -1533,6 +1595,8 @@ def _held_out(held: HeldSale) -> dict:
             "discount": line_discount,
             "line_total": total,
             "is_labour": labour_line,
+            "on_hand": on_hand,
+            "short": short,
         })
         if labour_line:
             labour += total
@@ -1558,6 +1622,10 @@ def _held_out(held: HeldSale) -> dict:
         "held_for_minutes": held_for,
         "lines": lines,
         "line_count": len(lines),
+        "reserved_units": round(
+            sum(l["quantity"] for l in lines if not l["is_labour"]), 4
+        ),
+        "short_lines": sum(1 for l in lines if l["short"]),
         "parts_total": round(parts, 2),
         "labour_total": round(labour, 2),
         "discount_total": round(discount_total, 2),
@@ -1568,7 +1636,8 @@ def _held_out(held: HeldSale) -> dict:
 def _get_held(db: Session, held_id: int) -> HeldSale:
     held = (
         db.query(HeldSale)
-        .options(joinedload(HeldSale.lines), joinedload(HeldSale.customer))
+        .options(joinedload(HeldSale.lines).joinedload(HeldSaleLine.product),
+                 joinedload(HeldSale.customer))
         .filter(HeldSale.id == held_id)
         .first()
     )
@@ -1581,7 +1650,8 @@ def _get_held(db: Session, held_id: int) -> HeldSale:
 def list_holds(q: str = "", db: Session = Depends(get_db)):
     """Everything parked at the till, oldest first so nothing is forgotten."""
     query = db.query(HeldSale).options(
-        joinedload(HeldSale.lines), joinedload(HeldSale.customer)
+        joinedload(HeldSale.lines).joinedload(HeldSaleLine.product),
+        joinedload(HeldSale.customer),
     )
     if q:
         like = f"%{q}%"
@@ -1632,10 +1702,19 @@ def create_hold(payload: HeldSaleCreate, db: Session = Depends(get_db)):
         payment_method=payload.payment_method,
     )
 
+    resolved = []
     for line in payload.lines:
         product = db.get(Product, line.product_id)
         if not product:
             raise HTTPException(400, f"Product {line.product_id} not found")
+        resolved.append((product, line.quantity))
+    # A hold that cannot be honoured is not a promise, it is a queue jump.
+    _refuse_if_reserved(
+        db, resolved, payload.allow_shortfall,
+        only_when_reserved=False, verb="hold",
+    )
+
+    for line, (product, _qty) in zip(payload.lines, resolved):
         unit_price = line.unit_price if line.unit_price is not None else product.sell_price
         if line.discount > line.quantity * unit_price:
             raise HTTPException(400, "Discount cannot be more than the line total")

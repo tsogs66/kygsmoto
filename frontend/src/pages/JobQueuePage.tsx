@@ -113,13 +113,20 @@ export default function JobQueuePage() {
   }
 
   const checkout = async (job: Job, allowNegative = false) => {
-    // Selling past what is on the shelf drives stock negative, so make the
-    // operator confirm it rather than letting one click do it quietly.
+    // Selling past what is free drives stock negative, or spends parts a
+    // basket at the till has already claimed. Either way the operator
+    // confirms it rather than letting one click do it quietly.
     if (allowNegative) {
-      const short = job.lines.filter((l) => l.short).map((l) => l.product_name)
+      const short = job.lines.filter((l) => l.short)
+      const names = short.map(
+        (l) => l.product_name + (l.reserved ? ` (${l.reserved} held at the till)` : ''),
+      )
+      const heldToo = short.some((l) => l.reserved > 0)
       const proceed = window.confirm(
-        `Not enough stock for: ${short.join(', ')}.\n\n` +
-        'Taking payment will leave stock negative until the delivery is booked in. Continue?',
+        `Not enough free stock for: ${names.join(', ')}.\n\n` +
+        (heldToo
+          ? 'Some of these parts are reserved for a held sale. Taking payment spends them anyway. Continue?'
+          : 'Taking payment will leave stock negative until the delivery is booked in. Continue?'),
       )
       if (!proceed) return
     }
@@ -334,8 +341,9 @@ export default function JobQueuePage() {
             )}
             {detail.short_lines > 0 && (
               <div className="error-banner">
-                {detail.short_lines} line(s) need more stock than is on the shelf.
-                Receive stock, reduce the line, or confirm to sell anyway.
+                {detail.short_lines} line(s) need more stock than is free.
+                Receive stock, release a hold, reduce the line, or confirm to
+                sell anyway.
               </div>
             )}
             {detail.invoice_no && (
@@ -360,7 +368,13 @@ export default function JobQueuePage() {
                       <td>{line.is_labour ? 'Labour' : 'Part'}</td>
                       <td>
                         {line.product_name}
-                        {line.short && <span className="muted"> · short</span>}
+                        {line.short && (
+                          <span className="muted">
+                            {' '}· short
+                            {line.reserved > 0
+                              && ` (${line.on_hand} on hand, ${line.reserved} held at the till)`}
+                          </span>
+                        )}
                         <div className="muted">{line.sku}</div>
                       </td>
                       <td className="num">{line.quantity}</td>

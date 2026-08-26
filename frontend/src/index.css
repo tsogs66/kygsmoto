@@ -353,6 +353,10 @@ th {
   color: var(--ink-soft);
 }
 
+.nowrap {
+  white-space: nowrap;
+}
+
 .error-banner {
   background: rgba(214, 40, 40, 0.1);
   border: 1px solid rgba(214, 40, 40, 0.25);
