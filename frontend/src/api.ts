@@ -129,7 +129,112 @@ export interface ProductForecast {
   weekday_seasonality: { day: string; index: number }[]
 }
 
+
+// ------------------------------------------------------------------- jobs
+
+export interface JobLine {
+  id: number
+  product_id: number
+  sku: string | null
+  product_name: string
+  quantity: number
+  unit_price: number
+  line_total: number
+  is_labour: boolean
+  on_hand: number
+  short: boolean
+}
+
+export interface Job {
+  id: number
+  job_no: string
+  status: string
+  priority: string
+  customer_id: number | null
+  customer_name: string
+  contact: string
+  plate_no: string
+  motorcycle: string
+  complaint: string
+  notes: string
+  mechanic: string
+  created_at: string
+  started_at: string | null
+  ready_at: string | null
+  completed_at: string | null
+  cancelled_at: string | null
+  cancel_reason: string
+  sale_id: number | null
+  invoice_no: string | null
+  hours_open: number | null
+  lines: JobLine[]
+  line_count: number
+  parts_total: number
+  labour_total: number
+  total: number
+  short_lines: number
+}
+
+export interface JobBoard {
+  counts: Record<string, number>
+  open_total: number
+  open_value: number
+  jobs: Job[]
+}
+
+export interface JobCreateIn {
+  customer_name?: string
+  contact?: string
+  plate_no?: string
+  motorcycle?: string
+  complaint?: string
+  notes?: string
+  mechanic?: string
+  priority?: string
+  lines?: { product_id: number; quantity: number; unit_price?: number }[]
+}
+
 export const api = {
+  jobBoard: () => request<JobBoard>('/jobs/board'),
+  jobs: (status = 'open', q = '') => {
+    const p = new URLSearchParams({ status })
+    if (q) p.set('q', q)
+    return request<{ jobs: Job[] }>(`/jobs?${p}`)
+  },
+  job: (id: number) => request<Job>(`/jobs/${id}`),
+  createJob: (body: JobCreateIn) =>
+    request<Job>('/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  updateJob: (id: number, body: Record<string, string>) =>
+    request<Job>(`/jobs/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  addJobLine: (id: number, product_id: number, quantity: number) =>
+    request<Job>(`/jobs/${id}/lines`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product_id, quantity }),
+    }),
+  removeJobLine: (id: number, lineId: number) =>
+    request<Job>(`/jobs/${id}/lines/${lineId}`, { method: 'DELETE' }),
+  cancelJob: (id: number, reason: string) =>
+    request<Job>(`/jobs/${id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    }),
+  checkoutJob: (id: number, body: { discount?: number; payment_method?: string; allow_negative_stock?: boolean }) =>
+    request<{ job: Job; sale: Sale }>(`/jobs/${id}/checkout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
   movers: (direction: 'fast' | 'slow' | 'dead', days = 90, limit = 100) =>
     request<MoversOut>(`/analytics/movers?direction=${direction}&days=${days}&limit=${limit}`),
   reorder: (days = 90, supplierId?: number) => {
