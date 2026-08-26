@@ -128,6 +128,7 @@ class SaleItemIn(BaseModel):
     product_id: int
     quantity: float = Field(gt=0)
     unit_price: Optional[float] = None
+    discount: float = Field(default=0.0, ge=0)
 
 
 class SaleCreate(BaseModel):
@@ -150,6 +151,7 @@ class SaleItemOut(ORMModel):
     quantity: float
     unit_price: float
     cost_price: float
+    discount: float = 0.0
     line_total: float
 
 
@@ -462,10 +464,12 @@ class JobLineIn(BaseModel):
     product_id: int
     quantity: float = Field(gt=0)
     unit_price: Optional[float] = None
+    discount: float = Field(default=0.0, ge=0)
 
 
 class JobCreate(BaseModel):
     customer_id: Optional[int] = None
+    save_customer: bool = False
     customer_name: Optional[str] = None
     contact: Optional[str] = None
     plate_no: Optional[str] = None

@@ -134,6 +134,7 @@ def _sale_out(s: Sale) -> SaleOut:
                 "quantity": i.quantity,
                 "unit_price": i.unit_price,
                 "cost_price": i.cost_price,
+                "discount": i.discount or 0.0,
                 "line_total": i.line_total,
             }
             for i in s.items
@@ -394,7 +395,9 @@ def create_sale(payload: SaleCreate, db: Session = Depends(get_db)):
         if not product:
             raise HTTPException(400, f"Product {item.product_id} not found")
         unit_price = item.unit_price if item.unit_price is not None else product.sell_price
-        line_total = item.quantity * unit_price
+        gross = item.quantity * unit_price
+        discount = min(max(item.discount, 0.0), gross)   # never below zero
+        line_total = gross - discount
         subtotal += line_total
         sale.items.append(
             SaleItem(
@@ -404,6 +407,7 @@ def create_sale(payload: SaleCreate, db: Session = Depends(get_db)):
                 quantity=item.quantity,
                 unit_price=unit_price,
                 cost_price=product.cost_price,
+                discount=discount,
                 line_total=line_total,
             )
         )
@@ -1220,10 +1224,12 @@ def _is_labour(sku: Optional[str]) -> bool:
 
 
 def _job_out(job: Job) -> dict:
-    parts = labour = 0.0
+    parts = labour = discount_total = 0.0
     lines = []
     for line in job.lines:
-        total = round(line.quantity * line.unit_price, 2)
+        line_discount = float(line.discount or 0)
+        total = round(line.quantity * line.unit_price - line_discount, 2)
+        discount_total += line_discount
         on_hand = float(line.product.stock_qty or 0) if line.product else 0.0
         labour_line = _is_labour(line.sku)
         # Flag shortages now so the counter is not surprised at payment.
@@ -1235,6 +1241,7 @@ def _job_out(job: Job) -> dict:
             "product_name": line.product_name,
             "quantity": line.quantity,
             "unit_price": line.unit_price,
+            "discount": line_discount,
             "line_total": total,
             "is_labour": labour_line,
             "on_hand": on_hand,
@@ -1276,6 +1283,7 @@ def _job_out(job: Job) -> dict:
         "line_count": len(lines),
         "parts_total": round(parts, 2),
         "labour_total": round(labour, 2),
+        "discount_total": round(discount_total, 2),
         "total": round(parts + labour, 2),
         "short_lines": sum(1 for line in lines if line["short"]),
     }
@@ -1358,9 +1366,22 @@ def create_job(payload: JobCreate, db: Session = Depends(get_db)):
     if payload.priority not in ("normal", "urgent"):
         raise HTTPException(400, "Priority must be normal or urgent")
 
+    customer_id = payload.customer_id
+    # Keep the counter's typing: optionally turn a walk-in into a saved customer
+    # so the next visit can be looked up instead of re-keyed.
+    if customer_id is None and payload.save_customer and (payload.customer_name or "").strip():
+        customer = Customer(
+            name=payload.customer_name.strip(),
+            phone=(payload.contact or "").strip() or None,
+            motorcycle_model=(payload.motorcycle or "").strip() or None,
+        )
+        db.add(customer)
+        db.flush()
+        customer_id = customer.id
+
     job = Job(
         job_no=_next_no(db, Job, "job_no", "JOB"),
-        customer_id=payload.customer_id,
+        customer_id=customer_id,
         customer_name=(payload.customer_name or "").strip() or None,
         contact=(payload.contact or "").strip() or None,
         plate_no=(payload.plate_no or "").strip().upper() or None,
@@ -1385,12 +1406,16 @@ def _build_job_line(db: Session, line: JobLineIn) -> JobLine:
     if line.quantity <= 0:
         raise HTTPException(400, "Quantity must be greater than 0")
     unit_price = line.unit_price if line.unit_price is not None else product.sell_price
+    gross = line.quantity * unit_price
+    if line.discount > gross:
+        raise HTTPException(400, "Discount cannot be more than the line total")
     return JobLine(
         product_id=product.id,
         sku=product.sku,
         product_name=product.name,
         quantity=line.quantity,
         unit_price=unit_price,
+        discount=line.discount,
     )
 
 
@@ -1485,7 +1510,7 @@ def checkout_job(job_id: int, payload: JobCheckout, db: Session = Depends(get_db
         notes=f"{job.job_no} {job.motorcycle or ''}".strip(),
         items=[
             SaleItemIn(product_id=line.product_id, quantity=line.quantity,
-                       unit_price=line.unit_price)
+                       unit_price=line.unit_price, discount=float(line.discount or 0))
             for line in job.lines
         ],
     )

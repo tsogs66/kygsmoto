@@ -139,6 +139,7 @@ export interface JobLine {
   product_name: string
   quantity: number
   unit_price: number
+  discount: number
   line_total: number
   is_labour: boolean
   on_hand: number
@@ -171,6 +172,7 @@ export interface Job {
   line_count: number
   parts_total: number
   labour_total: number
+  discount_total: number
   total: number
   short_lines: number
 }
@@ -183,6 +185,8 @@ export interface JobBoard {
 }
 
 export interface JobCreateIn {
+  customer_id?: number | null
+  save_customer?: boolean
   customer_name?: string
   contact?: string
   plate_no?: string
@@ -191,7 +195,7 @@ export interface JobCreateIn {
   notes?: string
   mechanic?: string
   priority?: string
-  lines?: { product_id: number; quantity: number; unit_price?: number }[]
+  lines?: { product_id: number; quantity: number; unit_price?: number; discount?: number }[]
 }
 
 export const api = {
@@ -214,11 +218,11 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
-  addJobLine: (id: number, product_id: number, quantity: number) =>
+  addJobLine: (id: number, product_id: number, quantity: number, discount = 0) =>
     request<Job>(`/jobs/${id}/lines`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ product_id, quantity }),
+      body: JSON.stringify({ product_id, quantity, discount }),
     }),
   removeJobLine: (id: number, lineId: number) =>
     request<Job>(`/jobs/${id}/lines/${lineId}`, { method: 'DELETE' }),
@@ -431,8 +435,11 @@ export type Category = { id: number; name: string; description?: string }
 export type Customer = {
   id: number
   name: string
-  phone?: string
-  motorcycle_model?: string
+  phone?: string | null
+  email?: string | null
+  address?: string | null
+  motorcycle_model?: string | null
+  notes?: string | null
 }
 export type Supplier = { id: number; name: string; phone?: string; email?: string }
 

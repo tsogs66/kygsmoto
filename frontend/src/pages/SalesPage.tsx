@@ -3,8 +3,9 @@ import type { FormEvent } from 'react'
 import { api, peso } from '../api'
 import type { Customer, Product, Sale } from '../api'
 import { useSortableRows } from '../hooks/useSortableRows'
+import CustomerSelect from '../components/CustomerSelect'
 
-type CartLine = { product: Product; quantity: number }
+type CartLine = { product: Product; quantity: number; discount: number }
 type Period = 'all' | 'weekly' | 'monthly' | 'yearly'
 
 export default function SalesPage() {
@@ -13,7 +14,7 @@ export default function SalesPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [sales, setSales] = useState<Sale[]>([])
   const [cart, setCart] = useState<CartLine[]>([])
-  const [customerId, setCustomerId] = useState('')
+  const [customerId, setCustomerId] = useState<number | null>(null)
   const [payment, setPayment] = useState('cash')
   const [productSearch, setProductSearch] = useState('')
   const [productId, setProductId] = useState('')
@@ -76,8 +77,17 @@ export default function SalesPage() {
   )
   const { sorted, toggle, indicator } = useSortableRows(saleRows, 'sale_date', 'desc')
 
+  /** A line never goes below zero, however large the discount typed. */
+  const lineTotal = (line: CartLine) =>
+    Math.max(0, line.quantity * line.product.sell_price - (line.discount || 0))
+
   const total = useMemo(
-    () => cart.reduce((sum, line) => sum + line.quantity * line.product.sell_price, 0),
+    () => cart.reduce((sum, line) => sum + lineTotal(line), 0),
+    [cart],
+  )
+  const discountTotal = useMemo(
+    () => cart.reduce((sum, line) => sum + Math.min(
+      line.discount || 0, line.quantity * line.product.sell_price), 0),
     [cart],
   )
 
@@ -93,7 +103,7 @@ export default function SalesPage() {
           l.product.id === product.id ? { ...l, quantity: l.quantity + quantity } : l,
         )
       }
-      return [...prev, { product, quantity }]
+      return [...prev, { product, quantity, discount: 0 }]
     })
     setQty('1')
   }
@@ -108,13 +118,14 @@ export default function SalesPage() {
     }
     try {
       const sale = await api.createSale({
-        customer_id: customerId ? Number(customerId) : null,
+        customer_id: customerId,
         payment_method: payment,
         sale_date: saleDate ? new Date(saleDate).toISOString() : null,
         items: cart.map((l) => ({
           product_id: l.product.id,
           quantity: l.quantity,
           unit_price: l.product.sell_price,
+          discount: l.discount || 0,
         })),
       })
       setOk(`Sale ${sale.invoice_no} saved · ${peso(sale.total)} · ${new Date(sale.sale_date).toLocaleString()}`)
@@ -143,15 +154,12 @@ export default function SalesPage() {
           <div className="form-grid">
             <label>
               Customer
-              <select value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
-                <option value="">Walk-in</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                    {c.motorcycle_model ? ` (${c.motorcycle_model})` : ''}
-                  </option>
-                ))}
-              </select>
+              <CustomerSelect
+                customers={customers}
+                value={customerId}
+                onSelect={(c) => setCustomerId(c ? c.id : null)}
+                onCreated={(c) => setCustomers((prev) => [...prev, c])}
+              />
             </label>
             <label>
               Payment
@@ -225,7 +233,26 @@ export default function SalesPage() {
                   )
                 }
               />
-              <div>{peso(line.quantity * line.product.sell_price)}</div>
+              <label className="muted" style={{ fontSize: '0.72rem' }}>
+                Less
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={line.discount}
+                  style={{ width: 80 }}
+                  onChange={(e) =>
+                    setCart((prev) =>
+                      prev.map((l) =>
+                        l.product.id === line.product.id
+                          ? { ...l, discount: Math.max(0, Number(e.target.value) || 0) }
+                          : l,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <div>{peso(lineTotal(line))}</div>
               <button
                 type="button"
                 className="btn secondary"
@@ -237,7 +264,14 @@ export default function SalesPage() {
           ))}
 
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1rem', alignItems: 'center' }}>
-            <strong style={{ fontFamily: 'Oswald, sans-serif', fontSize: '1.4rem' }}>Total {peso(total)}</strong>
+            <strong style={{ fontFamily: 'Oswald, sans-serif', fontSize: '1.4rem' }}>
+              Total {peso(total)}
+              {discountTotal > 0 && (
+                <span className="muted" style={{ fontSize: '0.8rem', fontWeight: 400 }}>
+                  {' '}· less {peso(discountTotal)}
+                </span>
+              )}
+            </strong>
             <button className="btn" type="submit">
               Complete Sale
             </button>

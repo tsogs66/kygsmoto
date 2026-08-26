@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api, peso } from '../api'
-import type { Job, JobBoard, Product } from '../api'
+import type { Customer, Job, JobBoard, Product } from '../api'
 import ProductSearchSelect from '../components/ProductSearchSelect'
+import CustomerSelect from '../components/CustomerSelect'
 
 const STATUS_LABEL: Record<string, string> = {
   queued: 'Waiting',
@@ -20,6 +21,9 @@ export default function JobQueuePage() {
   const [search, setSearch] = useState('')
   const [detail, setDetail] = useState<Job | null>(null)
   const [products, setProducts] = useState<Product[]>([])
+  const [customers, setCustomers] = useState<Customer[]>([])
+  const [customerId, setCustomerId] = useState<number | null>(null)
+  const [saveCustomer, setSaveCustomer] = useState(false)
   const [error, setError] = useState('')
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
@@ -34,6 +38,7 @@ export default function JobQueuePage() {
   // Add-work picker on the open ticket
   const [addProductId, setAddProductId] = useState('')
   const [addQty, setAddQty] = useState('1')
+  const [addDiscount, setAddDiscount] = useState('0')
 
   const load = async () => {
     setError('')
@@ -49,6 +54,7 @@ export default function JobQueuePage() {
   useEffect(() => {
     load()
     api.products().then(setProducts).catch(() => undefined)
+    api.customers().then(setCustomers).catch(() => undefined)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter])
 
@@ -61,9 +67,15 @@ export default function JobQueuePage() {
     setBusy(true)
     setError('')
     try {
-      const job = await api.createJob(form)
+      const job = await api.createJob({
+        ...form,
+        customer_id: customerId,
+        save_customer: customerId ? false : saveCustomer,
+      })
       setOk(`${job.job_no} opened`)
       setShowNew(false)
+      setCustomerId(null)
+      setSaveCustomer(false)
       setForm({ customer_name: '', contact: '', plate_no: '', motorcycle: '',
                 complaint: '', mechanic: '', priority: 'normal' })
       load()
@@ -89,9 +101,11 @@ export default function JobQueuePage() {
   const addWork = async () => {
     if (!detail || !addProductId) return
     try {
-      await api.addJobLine(detail.id, Number(addProductId), Number(addQty) || 1)
+      await api.addJobLine(detail.id, Number(addProductId), Number(addQty) || 1,
+                           Math.max(0, Number(addDiscount) || 0))
       setAddProductId('')
       setAddQty('1')
+      setAddDiscount('0')
       refreshDetail(detail.id)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not add work')
@@ -181,9 +195,27 @@ export default function JobQueuePage() {
         <div className="panel" style={{ marginTop: '1rem' }}>
           <h2>New job ticket</h2>
           <div className="grid grid-2">
-            <label className="label">Customer name
-              <input value={form.customer_name}
-                     onChange={(e) => setForm({ ...form, customer_name: e.target.value })} />
+            <label className="label">Customer
+              <CustomerSelect
+                customers={customers}
+                value={customerId}
+                walkInName={form.customer_name}
+                onSelect={(c) => {
+                  setCustomerId(c ? c.id : null)
+                  if (c) {
+                    // Pull what we already know about this rider onto the ticket.
+                    setForm((f) => ({
+                      ...f,
+                      customer_name: c.name,
+                      contact: c.phone || f.contact,
+                      motorcycle: c.motorcycle_model || f.motorcycle,
+                    }))
+                    setSaveCustomer(false)
+                  }
+                }}
+                onWalkInName={(name) => setForm((f) => ({ ...f, customer_name: name }))}
+                onCreated={(c) => setCustomers((prev) => [...prev, c])}
+              />
             </label>
             <label className="label">Contact number
               <input value={form.contact}
@@ -209,6 +241,14 @@ export default function JobQueuePage() {
               </select>
             </label>
           </div>
+          {!customerId && form.customer_name.trim() && (
+            <label className="label" style={{ display: 'flex', gap: '0.5rem',
+                                              alignItems: 'center' }}>
+              <input type="checkbox" checked={saveCustomer} style={{ width: 'auto' }}
+                     onChange={(e) => setSaveCustomer(e.target.checked)} />
+              <span>Save “{form.customer_name.trim()}” as a customer for next time</span>
+            </label>
+          )}
           <label className="label">Reported problem
             <input placeholder="What did the customer bring it in for?" value={form.complaint}
                    onChange={(e) => setForm({ ...form, complaint: e.target.value })} />
@@ -310,7 +350,8 @@ export default function JobQueuePage() {
                 <thead>
                   <tr>
                     <th>Type</th><th>Description</th><th className="num">Qty</th>
-                    <th className="num">Price</th><th className="num">Total</th><th />
+                    <th className="num">Price</th><th className="num">Less</th>
+                    <th className="num">Total</th><th />
                   </tr>
                 </thead>
                 <tbody>
@@ -324,6 +365,7 @@ export default function JobQueuePage() {
                       </td>
                       <td className="num">{line.quantity}</td>
                       <td className="num">{peso(line.unit_price)}</td>
+                      <td className="num">{line.discount ? peso(line.discount) : '—'}</td>
                       <td className="num">{peso(line.line_total)}</td>
                       <td>
                         {['queued', 'in_progress', 'ready'].includes(detail.status) && (
@@ -337,14 +379,17 @@ export default function JobQueuePage() {
                     </tr>
                   ))}
                   {!detail.lines.length && (
-                    <tr><td colSpan={6} className="muted">No parts or labour yet.</td></tr>
+                    <tr><td colSpan={7} className="muted">No parts or labour yet.</td></tr>
                   )}
                 </tbody>
               </table>
             </div>
 
             <p><strong>Parts</strong> {peso(detail.parts_total)} ·{' '}
-               <strong>Labour</strong> {peso(detail.labour_total)} ·{' '}
+               <strong>Labour</strong> {peso(detail.labour_total)}
+               {detail.discount_total > 0 && (
+                 <> · <strong>Discounts</strong> {peso(detail.discount_total)}</>
+               )} ·{' '}
                <strong>Total</strong> {peso(detail.total)}</p>
 
             {['queued', 'in_progress', 'ready'].includes(detail.status) && (
@@ -354,8 +399,12 @@ export default function JobQueuePage() {
                   <ProductSearchSelect products={products}
                                        value={addProductId ? Number(addProductId) : null}
                                        onSelect={(id) => setAddProductId(String(id))} />
-                  <input type="number" min="1" step="1" value={addQty} style={{ width: 90 }}
+                  <input type="number" min="1" step="1" value={addQty} style={{ width: 80 }}
+                         title="Quantity"
                          onChange={(e) => setAddQty(e.target.value)} />
+                  <input type="number" min="0" step="0.01" value={addDiscount}
+                         style={{ width: 90 }} title="Discount on this line"
+                         onChange={(e) => setAddDiscount(e.target.value)} />
                   <button className="btn secondary" onClick={addWork}>Add</button>
                 </div>
 
