@@ -932,27 +932,10 @@ async def import_workbook(
         raise HTTPException(404, str(exc)) from exc
 
 
-@router.post("/imports/workbook/local", response_model=WorkbookImportOut)
-def import_workbook_local(
-    path: str = Form("KYGS APRIL 2025.xlsm"),
-    replace_existing: bool = Form(True),
-    db: Session = Depends(get_db),
-):
-    """Import workbook from a local path (repo root or absolute)."""
-    candidate = Path(path)
-    if not candidate.is_absolute():
-        repo_root = Path(__file__).resolve().parents[3]
-        for base in (repo_root, Path.cwd(), Path("/workspace")):
-            trial = base / path
-            if trial.exists():
-                candidate = trial
-                break
-    if not candidate.exists():
-        raise HTTPException(404, f"Workbook not found: {path}")
-    try:
-        return import_kygs_workbook(db, candidate, replace_existing=replace_existing)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+# The workbook is no longer shipped inside the image, so there is no server-side
+# path to import from: the database is the shop's record once data is in. Upload
+# a workbook through /imports/workbook when a one-off import is needed, or run
+# backend/scripts/import_kygs.py against a file mounted into the container.
 
 @router.post("/imports/stock/preview", response_model=StockPreviewOut)
 async def preview_stock_import(

@@ -1,0 +1,28 @@
+# The shop's data lives in the mounted volume, not in the image.
+*.xlsm
+*.xlsx
+*.xls
+samples/
+
+# Build outputs and dependencies — rebuilt inside the image.
+frontend/node_modules/
+frontend/dist/
+backend/static/
+
+# Runtime state: never bake a database or uploaded receipts into an image.
+backend/data/
+backend/uploads/
+*.db
+*.db-wal
+*.db-shm
+
+# Local development noise.
+.git/
+.gitignore
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store

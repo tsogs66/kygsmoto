@@ -23,8 +23,6 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 
 COPY backend/ ./backend/
 COPY --from=frontend-build /app/frontend/dist ./backend/static
-COPY samples ./samples
-COPY ["KYGS APRIL 2025.xlsm", "./KYGS APRIL 2025.xlsm"]
 COPY deploy ./deploy
 
 RUN mkdir -p /app/backend/data /app/backend/uploads \
