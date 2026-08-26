@@ -116,6 +116,8 @@ class ProductOut(ORMModel):
     category_name: Optional[str] = None
     supplier_name: Optional[str] = None
     stock_status: Optional[str] = None
+    reserved_qty: float = 0.0
+    available_qty: Optional[float] = None
 
 
 class StockAdjust(BaseModel):
@@ -140,6 +142,7 @@ class SaleCreate(BaseModel):
     tax: float = 0
     notes: Optional[str] = None
     sale_date: Optional[datetime] = None
+    allow_shortfall: bool = False
     items: list[SaleItemIn]
 
 
@@ -523,4 +526,5 @@ class HeldSaleCreate(BaseModel):
     note: Optional[str] = None
     payment_method: str = "cash"
     save_customer: bool = False
+    allow_shortfall: bool = False
     lines: list[HeldSaleLineIn]

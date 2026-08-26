@@ -117,6 +117,51 @@ export default function SalesPage() {
 
   const selectedCustomer = customers.find((c) => c.id === customerId) || null
 
+  /** What the counter may actually sell: the shelf, less anything held. */
+  const freeStock = (p: Product) =>
+    p.available_qty ?? p.stock_qty - (p.reserved_qty || 0)
+
+  /**
+   * The till refuses to spend parts a parked basket has claimed. That is a
+   * question, not a wall — put it to the counter and let them insist.
+   */
+  const askedToInsist = (err: unknown, action: string) =>
+    err instanceof Error
+    && err.message.startsWith('Not free to ')
+    && window.confirm(`${err.message}\n\n${action}`)
+
+  /**
+   * Cart lines asking for more than the shelf can spare, and what is left.
+   * Read from the freshly loaded product list rather than the snapshot taken
+   * when the line was added, so a hold made since then still shows up.
+   */
+  const overCommitted = useMemo(() => {
+    const out: Record<number, number> = {}
+    for (const line of cart) {
+      if (line.product.sku.toUpperCase().startsWith('LABOR')) continue
+      const live = products.find((p) => p.id === line.product.id) || line.product
+      const free = freeStock(live)
+      if (line.quantity > free) out[line.product.id] = free
+    }
+    return out
+  }, [cart, products])
+
+  const submitHold = (allowShortfall: boolean) =>
+    api.createHold({
+      ...holdInfo,
+      customer_id: customerId,
+      customer_name: holdInfo.customer_name || selectedCustomer?.name || '',
+      payment_method: payment,
+      save_customer: customerId ? false : holdSaveCustomer,
+      allow_shortfall: allowShortfall,
+      lines: cart.map((l) => ({
+        product_id: l.product.id,
+        quantity: l.quantity,
+        unit_price: l.product.sell_price,
+        discount: l.discount || 0,
+      })),
+    })
+
   const holdSale = async () => {
     if (!cart.length) {
       setError('Add at least one item before holding')
@@ -124,20 +169,15 @@ export default function SalesPage() {
     }
     setError('')
     try {
-      const held = await api.createHold({
-        ...holdInfo,
-        customer_id: customerId,
-        customer_name: holdInfo.customer_name || selectedCustomer?.name || '',
-        payment_method: payment,
-        save_customer: customerId ? false : holdSaveCustomer,
-        lines: cart.map((l) => ({
-          product_id: l.product.id,
-          quantity: l.quantity,
-          unit_price: l.product.sell_price,
-          discount: l.discount || 0,
-        })),
-      })
-      setOk(`Held as ${held.reference}${held.customer_name ? ` for ${held.customer_name}` : ''}`)
+      let held
+      try {
+        held = await submitHold(false)
+      } catch (err) {
+        if (!askedToInsist(err, 'Hold it anyway?')) throw err
+        held = await submitHold(true)
+      }
+      setOk(`Held as ${held.reference}${held.customer_name ? ` for ${held.customer_name}` : ''}`
+            + ` · ${held.reserved_units} unit(s) reserved`)
       setCart([])
       setCustomerId(null)
       setShowHold(false)
@@ -179,6 +219,20 @@ export default function SalesPage() {
     load()
   }
 
+  const submitSale = (allowShortfall: boolean) =>
+    api.createSale({
+      customer_id: customerId,
+      payment_method: payment,
+      sale_date: saleDate ? new Date(saleDate).toISOString() : null,
+      allow_shortfall: allowShortfall,
+      items: cart.map((l) => ({
+        product_id: l.product.id,
+        quantity: l.quantity,
+        unit_price: l.product.sell_price,
+        discount: l.discount || 0,
+      })),
+    })
+
   const checkout = async (e: FormEvent) => {
     e.preventDefault()
     setError('')
@@ -188,17 +242,13 @@ export default function SalesPage() {
       return
     }
     try {
-      const sale = await api.createSale({
-        customer_id: customerId,
-        payment_method: payment,
-        sale_date: saleDate ? new Date(saleDate).toISOString() : null,
-        items: cart.map((l) => ({
-          product_id: l.product.id,
-          quantity: l.quantity,
-          unit_price: l.product.sell_price,
-          discount: l.discount || 0,
-        })),
-      })
+      let sale
+      try {
+        sale = await submitSale(false)
+      } catch (err) {
+        if (!askedToInsist(err, 'Sell it anyway?')) throw err
+        sale = await submitSale(true)
+      }
       setOk(`Sale ${sale.invoice_no} saved · ${peso(sale.total)} · ${new Date(sale.sale_date).toLocaleString()}`)
       setCart([])
       load()
@@ -224,7 +274,10 @@ export default function SalesPage() {
           <div className="page-header">
             <div>
               <h2>Held sales ({holds.length})</h2>
-              <p className="muted">Parked baskets — oldest first. No stock is reserved.</p>
+              <p className="muted">
+                Parked baskets — oldest first. The parts in them stay on the
+                shelf but are reserved, so nobody else can sell them.
+              </p>
             </div>
           </div>
           <div className="table-wrap">
@@ -232,7 +285,8 @@ export default function SalesPage() {
               <thead>
                 <tr>
                   <th>Ref</th><th>Customer</th><th>Why</th>
-                  <th className="num">Lines</th><th className="num">Value</th>
+                  <th className="num">Lines</th><th className="num">Reserved</th>
+                  <th className="num">Value</th>
                   <th className="num">Waiting</th><th />
                 </tr>
               </thead>
@@ -248,6 +302,14 @@ export default function SalesPage() {
                     </td>
                     <td className="muted">{h.label || '—'}</td>
                     <td className="num">{h.line_count}</td>
+                    <td className="num">
+                      {h.reserved_units || '—'}
+                      {h.short_lines > 0 && (
+                        <div className="muted" style={{ color: 'var(--danger, #c0392b)' }}>
+                          {h.short_lines} not on the shelf
+                        </div>
+                      )}
+                    </td>
                     <td className="num">{peso(h.total)}</td>
                     <td className="num">{h.held_for_minutes ?? 0}m</td>
                     <td className="nowrap">
@@ -313,7 +375,8 @@ export default function SalesPage() {
                 <option value="">Select item ({filteredProducts.length})</option>
                 {filteredProducts.slice(0, 200).map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.sku} — {p.name} (stock {p.stock_qty})
+                    {p.sku} — {p.name} (stock {p.stock_qty}
+                    {p.reserved_qty ? `, ${freeStock(p)} free` : ''})
                   </option>
                 ))}
               </select>
@@ -334,6 +397,13 @@ export default function SalesPage() {
               <div>
                 <strong>{line.product.name}</strong>
                 <div className="muted">{line.product.sku}</div>
+                {line.product.id in overCommitted && (
+                  <div className="muted nowrap"
+                       style={{ color: 'var(--danger, #c0392b)' }}
+                       title="The rest is held at the till or not on the shelf">
+                    only {overCommitted[line.product.id]} free
+                  </div>
+                )}
               </div>
               <input
                 type="number"

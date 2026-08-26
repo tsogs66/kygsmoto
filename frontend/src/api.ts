@@ -143,6 +143,10 @@ export interface JobLine {
   line_total: number
   is_labour: boolean
   on_hand: number
+  /** Units of this part claimed by baskets parked at the till. */
+  reserved: number
+  /** on_hand minus reserved — what this ticket may actually spend. */
+  available: number
   short: boolean
 }
 
@@ -211,6 +215,9 @@ export interface HeldLine {
   discount: number
   line_total: number
   is_labour: boolean
+  /** Stock on the shelf right now — a stock-take can shrink it under a hold. */
+  on_hand?: number
+  short?: boolean
 }
 
 export interface HeldSale {
@@ -228,6 +235,9 @@ export interface HeldSale {
   held_for_minutes: number | null
   lines: HeldLine[]
   line_count: number
+  /** Part units this basket has reserved; labour reserves nothing. */
+  reserved_units: number
+  short_lines: number
   parts_total: number
   labour_total: number
   discount_total: number
@@ -244,6 +254,8 @@ export interface HeldSaleCreateIn {
   note?: string
   payment_method?: string
   save_customer?: boolean
+  /** Park a basket over stock the shop cannot currently back. */
+  allow_shortfall?: boolean
   lines: { product_id: number; quantity: number; unit_price?: number; discount?: number }[]
 }
 
@@ -486,6 +498,10 @@ export type Product = {
   category_name?: string
   supplier_name?: string
   stock_status?: string
+  /** Units claimed by baskets parked at the till. */
+  reserved_qty?: number
+  /** stock_qty minus reserved_qty — what the counter may actually sell. */
+  available_qty?: number
 }
 
 export type Category = { id: number; name: string; description?: string }
@@ -533,7 +549,11 @@ export type SaleCreate = {
   payment_method: string
   discount?: number
   sale_date?: string | null
-  items: { product_id: number; quantity: number; unit_price?: number }[]
+  /** Sell parts a held basket has already claimed, having been warned. */
+  allow_shortfall?: boolean
+  items: {
+    product_id: number; quantity: number; unit_price?: number; discount?: number
+  }[]
 }
 
 export type Purchase = {
