@@ -217,6 +217,24 @@ When uploading a full `.xlsm` for sales, the importer prefers the **SALES** shee
 | POST | `/api/imports/sales/preview` | Preview sales file |
 | POST | `/api/imports/sales` | Import sales file & update stock |
 
+## The mark
+
+A drive sprocket with a **K** in the hub — K for Kygs, the name over the door;
+a sprocket because it is the part a parts-and-service shop actually touches,
+and because a toothed silhouette still reads at 16px in a browser tab where
+finer detail turns to mush.
+
+It is drawn in `frontend/src/components/BrandMark.tsx` rather than imported,
+so it inherits the app's colour tokens and stays crisp at any size. The hub is
+filled with the bar colour so the letter reads on light and dark alike — a
+favicon has no say in the tab it lands on.
+
+`frontend/public/` carries the standalone copies, since no CSS reaches a tab
+icon or a launcher: `favicon.svg`, plus `icon-192/512.png` (rounded tile,
+transparent corners) and `icon-maskable-512.png` — separate art, with the mark
+pulled inside the 80% safe circle, because a launcher may crop a maskable icon
+to a circle and the sprocket's teeth run to the edge of the ordinary tile.
+
 ## Held sales reserve stock
 
 A basket parked at the till is a promise, so the parts in it stop being free

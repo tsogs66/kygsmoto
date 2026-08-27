@@ -78,9 +78,14 @@ textarea {
 
 .brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.55rem;
   white-space: nowrap;
+}
+
+.brand svg {
+  display: block;
+  flex: none;
 }
 
 .brand-mark {
@@ -92,11 +97,6 @@ textarea {
 
 .brand-mark span {
   color: var(--accent);
-}
-
-.brand-sub {
-  color: var(--ink-faint);
-  font-size: 0.78rem;
 }
 
 .nav-links {
@@ -448,10 +448,6 @@ textarea {
   .topbar {
     gap: 0.75rem;
     padding: 0 0.7rem;
-  }
-
-  .brand-sub {
-    display: none;
   }
 
   /* On a phone the bar is mostly nav; the wordmark yields the room. */
