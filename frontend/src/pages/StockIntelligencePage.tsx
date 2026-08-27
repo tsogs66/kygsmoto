@@ -4,6 +4,7 @@ import {
 } from 'recharts'
 import { api, peso } from '../api'
 import type { AbcOut, MoversOut, OverviewOut, ProductForecast, ReorderOut } from '../api'
+import { CHART_ACCENT, CHART_GRID, CHART_TICK, CHART_TOOLTIP } from '../chartTheme'
 
 type Tab = 'reorder' | 'fast' | 'dead' | 'abc'
 
@@ -280,11 +281,11 @@ export default function StockIntelligencePage() {
             <div style={{ width: '100%', height: 220 }}>
               <ResponsiveContainer>
                 <BarChart data={detail.weekly_demand}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="week_of" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
-                  <Bar dataKey="qty" fill="#d62828" />
+                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                  <XAxis dataKey="week_of" tick={CHART_TICK} />
+                  <YAxis tick={CHART_TICK} />
+                  <Tooltip {...CHART_TOOLTIP} />
+                  <Bar dataKey="qty" fill={CHART_ACCENT} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

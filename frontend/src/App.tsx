@@ -1,5 +1,4 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
-import { useState } from 'react'
 import DashboardPage from './pages/DashboardPage'
 import InventoryPage from './pages/InventoryPage'
 import SalesPage from './pages/SalesPage'
@@ -21,30 +20,24 @@ const links = [
 ]
 
 export default function App() {
-  const [open, setOpen] = useState(false)
-
   return (
     <div className="app-shell">
-      {open && <div className="backdrop" onClick={() => setOpen(false)} />}
-      <aside className={`sidebar ${open ? 'open' : ''}`}>
+      <header className="topbar">
         <div className="brand">
-          <div className="brand-mark">
+          <span className="brand-mark">
             KYG<span>SMOTO</span>
-          </div>
-          <div className="brand-sub">Sales · Inventory · Reports</div>
+          </span>
+          <span className="brand-sub">Sales · Inventory · Reports</span>
         </div>
-        <nav className="nav-links" onClick={() => setOpen(false)}>
+        <nav className="nav-links">
           {links.map((link) => (
             <NavLink key={link.to} to={link.to} end={link.end}>
               {link.label}
             </NavLink>
           ))}
         </nav>
-      </aside>
+      </header>
       <main className="main">
-        <button className="btn secondary mobile-toggle" onClick={() => setOpen(true)} style={{ marginBottom: '0.8rem' }}>
-          Menu
-        </button>
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/inventory" element={<InventoryPage />} />

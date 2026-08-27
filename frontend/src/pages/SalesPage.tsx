@@ -305,7 +305,7 @@ export default function SalesPage() {
                     <td className="num">
                       {h.reserved_units || '—'}
                       {h.short_lines > 0 && (
-                        <div className="muted" style={{ color: 'var(--danger, #c0392b)' }}>
+                        <div className="muted" style={{ color: 'var(--danger)' }}>
                           {h.short_lines} not on the shelf
                         </div>
                       )}
@@ -399,7 +399,7 @@ export default function SalesPage() {
                 <div className="muted">{line.product.sku}</div>
                 {line.product.id in overCommitted && (
                   <div className="muted nowrap"
-                       style={{ color: 'var(--danger, #c0392b)' }}
+                       style={{ color: 'var(--danger)' }}
                        title="The rest is held at the till or not on the shelf">
                     only {overCommitted[line.product.id]} free
                   </div>

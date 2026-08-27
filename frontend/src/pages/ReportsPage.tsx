@@ -13,8 +13,12 @@ import {
 } from 'recharts'
 import { api, peso } from '../api'
 import type { InventoryReport, PeriodReport } from '../api'
+import {
+  CHART_ACCENT, CHART_COLORS, CHART_GRID, CHART_OK, CHART_SECONDARY, CHART_TICK,
+  CHART_TOOLTIP,
+} from '../chartTheme'
 
-const COLORS = ['#d62828', '#1a1f24', '#2a9d8f', '#e9c46a', '#457b9d', '#6d597a']
+const COLORS = CHART_COLORS
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
@@ -135,11 +139,11 @@ export default function ReportsPage() {
           <div style={{ width: '100%', height: 280 }}>
             <ResponsiveContainer>
               <BarChart data={trend}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#d5d0c4" />
-                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v) => peso(Number(v))} />
-                <Bar dataKey="total" fill="#1a1f24" radius={[5, 5, 0, 0]} />
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                <XAxis dataKey="label" tick={CHART_TICK} />
+                <YAxis tick={CHART_TICK} />
+                <Tooltip {...CHART_TOOLTIP} formatter={(v) => peso(Number(v))} />
+                <Bar dataKey="total" fill={CHART_SECONDARY} radius={[5, 5, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -149,12 +153,13 @@ export default function ReportsPage() {
           <div style={{ width: '100%', height: 280 }}>
             <ResponsiveContainer>
               <PieChart>
-                <Pie data={sales.by_category} dataKey="total" nameKey="category" outerRadius={100} label>
+                <Pie data={sales.by_category} dataKey="total" nameKey="category" outerRadius={100}
+                     stroke="var(--bg-elevated)" strokeWidth={2} label>
                   {sales.by_category.map((_, idx) => (
                     <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
                   ))}
                 </Pie>
-                <Tooltip formatter={(v) => peso(Number(v))} />
+                <Tooltip {...CHART_TOOLTIP} formatter={(v) => peso(Number(v))} />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -175,16 +180,17 @@ export default function ReportsPage() {
         <div style={{ width: '100%', height: 320, marginTop: '0.75rem' }}>
           <ResponsiveContainer>
             <BarChart data={topChart} layout="vertical" margin={{ left: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#d5d0c4" />
-              <XAxis type="number" tick={{ fontSize: 11 }} />
-              <YAxis type="category" dataKey="name" width={140} tick={{ fontSize: 11 }} />
+              <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+              <XAxis type="number" tick={CHART_TICK} />
+              <YAxis type="category" dataKey="name" width={140} tick={CHART_TICK} />
               <Tooltip
+                {...CHART_TOOLTIP}
                 formatter={(v) => (metric === 'qty' ? Number(v).toLocaleString() : peso(Number(v)))}
                 labelFormatter={(_, payload) => payload?.[0]?.payload?.full || ''}
               />
               <Bar
                 dataKey="value"
-                fill={metric === 'profit' ? '#2a9d8f' : metric === 'qty' ? '#457b9d' : '#d62828'}
+                fill={metric === 'profit' ? CHART_OK : metric === 'qty' ? CHART_SECONDARY : CHART_ACCENT}
                 radius={[0, 6, 6, 0]}
               />
             </BarChart>
