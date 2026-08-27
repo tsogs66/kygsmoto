@@ -84,17 +84,28 @@ apt update && apt install -y docker.io git curl \
        -o /usr/local/lib/docker/cli-plugins/docker-compose \
   && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
   && cd ~ && rm -rf kygsmoto \
-  && git clone -b cursor/kygsmoto-sales-inventory-9004 https://github.com/tsogs66/kygsmoto.git \
+  && git clone -b cursor/purchase-invoice-lookup-9004 https://github.com/tsogs66/kygsmoto.git \
   && cd kygsmoto \
   && docker compose up -d --build \
   && echo "Open http://$(hostname -I | awk '{print $1}'):8000"
 ```
 
-**Autoupdate later:**
+**Update later** — backs up both volumes, then pulls and rebuilds:
 
 ```bash
-cd ~/kygsmoto && ./deploy/autoupdate.sh --branch cursor/kygsmoto-sales-inventory-9004
+cd /root/kygsmoto && docker compose stop && \
+B=/root/kygs-backups/$(date +%F-%H%M) && mkdir -p "$B"/data "$B"/uploads && \
+cp -a /var/lib/docker/volumes/kygsmoto_kygsmoto_data/_data/.    "$B"/data/ && \
+cp -a /var/lib/docker/volumes/kygsmoto_kygsmoto_uploads/_data/. "$B"/uploads/ && \
+git fetch origin && git checkout cursor/purchase-invoice-lookup-9004 && git pull --ff-only && \
+docker compose up -d --build && docker compose ps
 ```
+
+Then hard-refresh (Ctrl+Shift+R) — the app is a PWA, so a cached shell can
+outlive a deploy and make a good update look like a failed one.
+
+`./deploy/autoupdate.sh` pulls and rebuilds in one step but does **not** back
+up; see [deploy/PROXMOX.md](deploy/PROXMOX.md) §7 for what the two volumes hold.
 
 - **Web app:** `http://<lxc-ip>:8000` — **no app login** (auth not implemented yet)  
 - **Console `kygsmoto login:`:** Linux root only — set with `pct exec 210 -- passwd` on the PVE host  

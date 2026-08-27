@@ -104,7 +104,7 @@ Use the feature branch that contains `Dockerfile` + `docker-compose.yml` (until 
 
 ```bash
 cd ~ && rm -rf kygsmoto \
-  && git clone -b cursor/kygsmoto-sales-inventory-9004 https://github.com/tsogs66/kygsmoto.git \
+  && git clone -b cursor/purchase-invoice-lookup-9004 https://github.com/tsogs66/kygsmoto.git \
   && cd kygsmoto \
   && docker compose up -d --build
 ```
@@ -177,22 +177,56 @@ docker compose run --rm \
   kygsmoto python scripts/import_kygs.py /tmp/kygs.xlsm
 ```
 
-After the first import the spreadsheet is no longer needed. Back up the volume,
-not the workbook:
+After the first import the spreadsheet is no longer needed. Back up the volumes,
+not the workbook — see the next section.
+
+## 7. Back up before you touch anything
+
+There are **two** volumes, and a backup of one is not a backup of the shop:
+
+| Volume | Holds |
+| --- | --- |
+| `kygsmoto_kygsmoto_data` | the SQLite database — every sale, job and stock count |
+| `kygsmoto_kygsmoto_uploads` | scanned receipts and invoice photos |
+
+Restoring only the database leaves the records intact but every scanned image
+gone, so take both:
 
 ```bash
-docker run --rm -v kygsmoto_kygsmoto_data:/d -v "$PWD":/b alpine \
-  cp /d/kygsmoto.db /b/kygsmoto-$(date +%F).db
+cd /root/kygsmoto
+B=/root/kygs-backups/$(date +%F-%H%M) && mkdir -p "$B"/data "$B"/uploads
+docker compose stop
+cp -a /var/lib/docker/volumes/kygsmoto_kygsmoto_data/_data/.    "$B"/data/
+cp -a /var/lib/docker/volumes/kygsmoto_kygsmoto_uploads/_data/. "$B"/uploads/
+docker compose start
 ```
 
-## 7. Autoupdate from GitHub
+Stopping first matters: SQLite may have a write in flight, and copying a live
+database can capture it half-written.
 
-Pull latest code and rebuild containers:
+## 8. Update from GitHub
+
+The one-liner below backs both volumes up, moves the clone onto the branch the
+shop actually runs, rebuilds and restarts:
+
+```bash
+cd /root/kygsmoto && docker compose stop && \
+B=/root/kygs-backups/$(date +%F-%H%M) && mkdir -p "$B"/data "$B"/uploads && \
+cp -a /var/lib/docker/volumes/kygsmoto_kygsmoto_data/_data/.    "$B"/data/ && \
+cp -a /var/lib/docker/volumes/kygsmoto_kygsmoto_uploads/_data/. "$B"/uploads/ && \
+git fetch origin && git checkout cursor/purchase-invoice-lookup-9004 && git pull --ff-only && \
+docker compose up -d --build && docker compose ps
+```
+
+Then hard-refresh the browser (Ctrl+Shift+R). The app is a PWA, so a cached
+shell can outlive a deploy and make a good update look like a failed one.
+
+Or use the script, which pulls and rebuilds but does **not** back up:
 
 ```bash
 cd ~/kygsmoto
 chmod +x deploy/autoupdate.sh
-./deploy/autoupdate.sh --branch cursor/kygsmoto-sales-inventory-9004
+./deploy/autoupdate.sh --branch cursor/purchase-invoice-lookup-9004
 # after merge to main:
 # ./deploy/autoupdate.sh --branch main
 ```
@@ -202,12 +236,12 @@ Daily cron (03:00):
 ```bash
 crontab -e
 # add:
-0 3 * * * /root/kygsmoto/deploy/autoupdate.sh --branch cursor/kygsmoto-sales-inventory-9004 >> /var/log/kygsmoto-autoupdate.log 2>&1
+0 3 * * * /root/kygsmoto/deploy/autoupdate.sh --branch cursor/purchase-invoice-lookup-9004 >> /var/log/kygsmoto-autoupdate.log 2>&1
 ```
 
 ---
 
-## 8. Useful maintenance commands
+## 9. Useful maintenance commands
 
 ```bash
 # inside LXC, in ~/kygsmoto
@@ -226,7 +260,7 @@ pct enter 210
 
 ---
 
-## 9. Full copy-paste bootstrap (create already done)
+## 10. Full copy-paste bootstrap (create already done)
 
 If CT `210` already exists and you are inside it (`pct enter 210`):
 
@@ -238,7 +272,7 @@ apt update && apt install -y docker.io git curl \
        -o /usr/local/lib/docker/cli-plugins/docker-compose \
   && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
   && cd ~ && rm -rf kygsmoto \
-  && git clone -b cursor/kygsmoto-sales-inventory-9004 https://github.com/tsogs66/kygsmoto.git \
+  && git clone -b cursor/purchase-invoice-lookup-9004 https://github.com/tsogs66/kygsmoto.git \
   && cd kygsmoto \
   && docker compose up -d --build \
   && echo "Open http://$(hostname -I | awk '{print $1}'):8000"
@@ -252,7 +286,7 @@ apt update && apt install -y docker.io git curl \
 | --- | --- |
 | `Unable to locate package docker-compose-v2` | Expected on Debian — install Compose plugin via `curl` (section 3) |
 | `git: command not found` | `apt install -y git` |
-| `Can't find a suitable configuration file` | Wrong branch or wrong directory — clone `-b cursor/kygsmoto-sales-inventory-9004` and `cd kygsmoto` |
+| `Can't find a suitable configuration file` | Wrong branch or wrong directory — clone `-b cursor/purchase-invoice-lookup-9004` and `cd kygsmoto` |
 | `pct passwd` unknown command | Use `pct exec 210 -- passwd` instead |
 | `pct: command not found` | You are inside the CT — run `pct` only on `root@pve` |
 | Docker fails in unprivileged CT | `pct set 210 --features nesting=1,keyctl=1` then reboot |

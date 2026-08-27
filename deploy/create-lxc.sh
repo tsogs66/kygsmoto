@@ -62,7 +62,7 @@ Inside the CT, bootstrap KYGSMOTO:
          -o /usr/local/lib/docker/cli-plugins/docker-compose \\
     && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \\
     && cd ~ && rm -rf kygsmoto \\
-    && git clone -b cursor/kygsmoto-sales-inventory-9004 https://github.com/tsogs66/kygsmoto.git \\
+    && git clone -b cursor/purchase-invoice-lookup-9004 https://github.com/tsogs66/kygsmoto.git \\
     && cd kygsmoto \\
     && docker compose up -d --build \\
     && echo "Open http://\$(hostname -I | awk '{print \$1}'):8000"
