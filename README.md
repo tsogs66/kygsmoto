@@ -35,6 +35,8 @@ The original Excel+VBA pattern (seen in open systems like [Sales_Inventory_Track
 - **Held sales** — park a basket at the till, identified by customer/plate, and it *reserves* its parts
 - **Handwritten sales photo scan** (OCR) with editable review — correct qty/price/date and select inventory items before import
 - PWA install for Android; Docker image for Proxmox LXC (includes Tesseract OCR)
+- **No internet needed to look right** — fonts ship inside the image, so the
+  app renders identically on a box with no route out
 
 ## Quick start (development)
 
@@ -228,6 +230,24 @@ after the counter has been told what they are spending:
 
 Job checkout keeps its own `allow_negative_stock` confirmation, which now
 also covers parts reserved at the till.
+
+## Fonts
+
+Oswald (headings, wordmark) and IBM Plex Sans (everything else) are served
+from `frontend/public/fonts/`, not from Google. The shop's box may have no
+route out, and the counter should look like the counter when the line is
+down — fetching them remotely made the app's appearance depend on the
+internet, and a failed fetch fell back silently to whatever face the device
+had.
+
+Both are the variable fonts, so one file covers every weight of a family:
+115 KB for all four, against 418 KB of static instances. Each family ships
+`latin` and `latin-ext`; `latin-ext` is not optional, because the peso sign
+₱ (U+20B1) lives in its range. The service worker precaches all four, so an
+installed app has them offline too.
+
+Both faces are under the SIL Open Font License 1.1 — see
+`frontend/public/fonts/OFL.txt`.
 
 ## Project layout
 
