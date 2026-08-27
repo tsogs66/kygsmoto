@@ -31,8 +31,14 @@ The original Excel+VBA pattern (seen in open systems like [Sales_Inventory_Track
 - **Sales report upload**: preview matches, then import and deduct stock from written sales files
 - Empty DB on first start — import the KYGS workbook / stock CSV, or add products manually (no hard-coded demo sales/inventory)
 - **Backdate sales** on POS with a sale date/time picker
+- **Job queue** for bikes in the shop — parts and labour on one ticket, stock moves at checkout
+- **Held sales** — park a basket at the till, identified by customer/plate, and it *reserves* its parts
+- **Till → job ticket** — send a cart of parts and labour onto a bike already in
+  the shop, so it lands on that customer's one invoice
 - **Handwritten sales photo scan** (OCR) with editable review — correct qty/price/date and select inventory items before import
 - PWA install for Android; Docker image for Proxmox LXC (includes Tesseract OCR)
+- **No internet needed to look right** — fonts ship inside the image, so the
+  app renders identically on a box with no route out
 
 ## Quick start (development)
 
@@ -80,17 +86,28 @@ apt update && apt install -y docker.io git curl \
        -o /usr/local/lib/docker/cli-plugins/docker-compose \
   && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
   && cd ~ && rm -rf kygsmoto \
-  && git clone -b cursor/kygsmoto-sales-inventory-9004 https://github.com/tsogs66/kygsmoto.git \
+  && git clone -b cursor/purchase-invoice-lookup-9004 https://github.com/tsogs66/kygsmoto.git \
   && cd kygsmoto \
   && docker compose up -d --build \
   && echo "Open http://$(hostname -I | awk '{print $1}'):8000"
 ```
 
-**Autoupdate later:**
+**Update later** — backs up both volumes, then pulls and rebuilds:
 
 ```bash
-cd ~/kygsmoto && ./deploy/autoupdate.sh --branch cursor/kygsmoto-sales-inventory-9004
+cd /root/kygsmoto && docker compose stop && \
+B=/root/kygs-backups/$(date +%F-%H%M) && mkdir -p "$B"/data "$B"/uploads && \
+cp -a /var/lib/docker/volumes/kygsmoto_kygsmoto_data/_data/.    "$B"/data/ && \
+cp -a /var/lib/docker/volumes/kygsmoto_kygsmoto_uploads/_data/. "$B"/uploads/ && \
+git fetch origin && git checkout cursor/purchase-invoice-lookup-9004 && git pull --ff-only && \
+docker compose up -d --build && docker compose ps
 ```
+
+Then hard-refresh (Ctrl+Shift+R) — the app is a PWA, so a cached shell can
+outlive a deploy and make a good update look like a failed one.
+
+`./deploy/autoupdate.sh` pulls and rebuilds in one step but does **not** back
+up; see [deploy/PROXMOX.md](deploy/PROXMOX.md) §7 for what the two volumes hold.
 
 - **Web app:** `http://<lxc-ip>:8000` — **no app login** (auth not implemented yet)  
 - **Console `kygsmoto login:`:** Linux root only — set with `pct exec 210 -- passwd` on the PVE host  
@@ -190,9 +207,82 @@ When uploading a full `.xlsm` for sales, the importer prefers the **SALES** shee
 | GET | `/api/reports/inventory` | Inventory valuation & movements |
 | GET/POST | `/api/products` | Inventory CRUD |
 | POST | `/api/sales` | Create sale (deduct stock) |
+| GET/POST | `/api/holds` | Park a basket at the till; reserves its parts |
+| DELETE | `/api/holds/{id}` | Discard or clear a hold, releasing its claim |
+| GET/POST | `/api/jobs` | Job tickets for bikes in the shop |
+| POST | `/api/jobs/{id}/lines` | Add one part or labour line to a ticket |
+| POST | `/api/jobs/{id}/lines/bulk` | Add a whole cart at once — all lines or none |
+| POST | `/api/jobs/{id}/checkout` | Turn a finished job into a sale |
 | POST | `/api/purchases` | Receive stock |
 | POST | `/api/imports/sales/preview` | Preview sales file |
 | POST | `/api/imports/sales` | Import sales file & update stock |
+
+## The mark
+
+A drive sprocket with a **K** in the hub — K for Kygs, the name over the door;
+a sprocket because it is the part a parts-and-service shop actually touches,
+and because a toothed silhouette still reads at 16px in a browser tab where
+finer detail turns to mush. Ten teeth and a heavy letter for the same reason:
+twelve fine teeth blur into a ring at tab size, and a thin stem is the first
+thing to go.
+
+It is drawn in `frontend/src/components/BrandMark.tsx` rather than imported,
+so it inherits the app's colour tokens and stays crisp at any size. The hub is
+filled with the bar colour so the letter reads on light and dark alike — a
+favicon has no say in the tab it lands on.
+
+`frontend/public/` carries the standalone copies, since no CSS reaches a tab
+icon or a launcher: `favicon.svg`, plus `icon-192/512.png` (rounded tile,
+transparent corners) and `icon-maskable-512.png` — separate art, with the mark
+pulled inside the 80% safe circle, because a launcher may crop a maskable icon
+to a circle and the sprocket's teeth run to the edge of the ordinary tile.
+
+## Held sales reserve stock
+
+A basket parked at the till is a promise, so the parts in it stop being free
+to sell. Nothing moves: the parts are still on the shelf, and `stock_qty`
+keeps agreeing with the stock-take. What changes is what the counter may
+spend:
+
+```text
+available = stock_qty − everything held
+```
+
+The claim is derived from the hold's own lines, so there is no counter to
+keep in step — discard the hold and the claim goes with it. Labour reserves
+nothing. Products report `reserved_qty` and `available_qty`, the POS item
+list shows what is free, and a job ticket flags parts a held basket has
+claimed.
+
+Two guards enforce it, and both can be overridden with `allow_shortfall`
+after the counter has been told what they are spending:
+
+- A **sale** is refused only when it would eat into a reservation. With
+  nothing held the till behaves exactly as before, negative stock included —
+  parts often arrive ahead of their paperwork.
+- A **hold** is refused when the shop cannot back it, since a promise over
+  stock that is not there is not a promise.
+
+Job checkout keeps its own `allow_negative_stock` confirmation, which now
+also covers parts reserved at the till.
+
+## Fonts
+
+Oswald (headings, wordmark) and IBM Plex Sans (everything else) are served
+from `frontend/public/fonts/`, not from Google. The shop's box may have no
+route out, and the counter should look like the counter when the line is
+down — fetching them remotely made the app's appearance depend on the
+internet, and a failed fetch fell back silently to whatever face the device
+had.
+
+Both are the variable fonts, so one file covers every weight of a family:
+115 KB for all four, against 418 KB of static instances. Each family ships
+`latin` and `latin-ext`; `latin-ext` is not optional, because the peso sign
+₱ (U+20B1) lives in its range. The service worker precaches all four, so an
+installed app has them offline too.
+
+Both faces are under the SIL Open Font License 1.1 — see
+`frontend/public/fonts/OFL.txt`.
 
 ## Project layout
 

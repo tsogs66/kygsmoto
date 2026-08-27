@@ -330,12 +330,14 @@ export default function PurchasesPage() {
   const selectProduct = (idx: number, productIdValue: number) => {
     const product = products.find((p) => p.id === productIdValue)
     if (!product) return
+    const row = ocrRows[idx]
     updateOcrRow(idx, {
       matched_product_id: product.id,
       matched_product_name: product.name,
-      sku: product.sku,
-      product_name: product.name,
-      unit_price: ocrRows[idx].unit_price || product.cost_price,
+      // Keep invoice Item Code / description when present
+      sku: row.sku || product.sku,
+      product_name: row.product_name || product.name,
+      unit_price: row.unit_price || product.cost_price,
       current_stock: product.stock_qty,
       status: 'matched',
       message: `Selected ${product.sku}`,
@@ -686,7 +688,7 @@ export default function PurchasesPage() {
             </button>
           </div>
 
-          <div style={{ marginTop: '1rem', paddingTop: '0.8rem', borderTop: '1px solid #e5e0d6' }}>
+          <div style={{ marginTop: '1rem', paddingTop: '0.8rem', borderTop: '1px solid var(--line)' }}>
             <h2 style={{ marginTop: 0 }}>Receipt for this entry</h2>
             <p className="muted">Upload a photo or PDF of the supplier receipt for {editing.po_no}.</p>
             <div className="toolbar">
@@ -739,10 +741,11 @@ export default function PurchasesPage() {
       )}
 
       <div className="panel" style={{ marginTop: '1rem' }}>
-        <h2>Scan handwritten purchase / delivery report</h2>
+        <h2>Scan purchase invoice / delivery report</h2>
         <p className="muted">
-          Upload a photo of a supplier invoice or handwritten receiving list. Review OCR lines, select inventory
-          items, set unit cost, then post as a purchase (stock increases).
+          Upload a photo of a Quotation / Detailed Invoice Register or handwritten receiving list. Item Codes are
+          matched to inventory SKUs — review qty, unit cost (Price), then post (stock increases). Multi-invoice pages
+          create separate purchase entries.
         </p>
         <div className="toolbar">
           <input
@@ -771,7 +774,7 @@ export default function PurchasesPage() {
               {photoUrl && (
                 <img
                   src={photoUrl}
-                  alt="Purchase report scan"
+                  alt="Purchase invoice scan"
                   style={{
                     width: '100%',
                     maxHeight: 420,
@@ -783,7 +786,9 @@ export default function PurchasesPage() {
               )}
               {ocrPreview && (
                 <p className="muted" style={{ marginTop: '0.6rem' }}>
-                  Engine: {ocrPreview.engine} · {ocrPreview.message}
+                  Engine: {ocrPreview.engine}
+                  {ocrPreview.document_type === 'invoice_register' ? ' · Invoice Register' : ''} ·{' '}
+                  {ocrPreview.message}
                   {ocrPreview.raw_text ? (
                     <button
                       type="button"
@@ -801,7 +806,7 @@ export default function PurchasesPage() {
                   style={{
                     whiteSpace: 'pre-wrap',
                     fontSize: '0.8rem',
-                    background: '#f4f1ea',
+                    background: 'var(--surface-2)',
                     padding: '0.75rem',
                     borderRadius: 8,
                     maxHeight: 200,
@@ -818,68 +823,128 @@ export default function PurchasesPage() {
                 <thead>
                   <tr>
                     <th>Use</th>
-                    <th>OCR / label</th>
+                    <th>Date</th>
+                    <th>Inv</th>
+                    <th>Item code</th>
+                    <th>Description</th>
                     <th>Select item</th>
                     <th>Qty</th>
+                    <th>UOM</th>
                     <th>Unit cost</th>
+                    <th>Amount</th>
+                    <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {ocrRows.map((row, idx) => (
-                    <tr key={`${row.row_number}-${idx}`}>
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={row.include !== false}
-                          onChange={(e) => updateOcrRow(idx, { include: e.target.checked })}
-                        />
-                      </td>
-                      <td style={{ minWidth: 140 }}>
-                        <div className="muted" style={{ fontSize: '0.75rem' }}>
-                          {row.ocr_text || '—'}
-                        </div>
-                        <input
-                          value={row.product_name || ''}
-                          placeholder="Item text"
-                          onChange={(e) => updateOcrRow(idx, { product_name: e.target.value })}
-                        />
-                      </td>
-                      <td style={{ minWidth: 220 }}>
-                        <ProductSearchSelect
-                          products={products}
-                          suggestions={row.suggestions || []}
-                          value={row.matched_product_id}
-                          selectedLabel={row.matched_product_name}
-                          mode="purchase"
-                          onSelect={(id) => selectProduct(idx, id)}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          min="0"
-                          step="1"
-                          value={row.quantity ?? ''}
-                          onChange={(e) => updateOcrRow(idx, { quantity: Number(e.target.value) })}
-                          style={{ width: 70 }}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={row.unit_price ?? ''}
-                          onChange={(e) =>
-                            updateOcrRow(idx, {
-                              unit_price: e.target.value === '' ? null : Number(e.target.value),
-                            })
-                          }
-                          style={{ width: 90 }}
-                        />
-                      </td>
-                    </tr>
-                  ))}
+                  {ocrRows.map((row, idx) => {
+                    const amount =
+                      row.line_amount != null
+                        ? row.line_amount
+                        : row.quantity && row.unit_price
+                          ? Number(row.quantity) * Number(row.unit_price)
+                          : null
+                    return (
+                      <tr key={`${row.row_number}-${idx}`}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={row.include !== false}
+                            onChange={(e) => updateOcrRow(idx, { include: e.target.checked })}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="date"
+                            value={row.sale_date ? String(row.sale_date).slice(0, 10) : ocrDate}
+                            onChange={(e) => updateOcrRow(idx, { sale_date: e.target.value })}
+                            style={{ width: 120 }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            value={row.invoice_no || ''}
+                            placeholder="Inv"
+                            onChange={(e) => updateOcrRow(idx, { invoice_no: e.target.value })}
+                            style={{ width: 90 }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            value={row.sku || ''}
+                            placeholder="Code"
+                            onChange={(e) => updateOcrRow(idx, { sku: e.target.value })}
+                            style={{ width: 110, fontFamily: 'ui-monospace, monospace' }}
+                          />
+                        </td>
+                        <td style={{ minWidth: 140 }}>
+                          <div className="muted" style={{ fontSize: '0.72rem' }}>
+                            {row.ocr_text || '—'}
+                          </div>
+                          <input
+                            value={row.product_name || ''}
+                            placeholder="Description"
+                            onChange={(e) => updateOcrRow(idx, { product_name: e.target.value })}
+                          />
+                        </td>
+                        <td style={{ minWidth: 220 }}>
+                          <ProductSearchSelect
+                            products={products}
+                            suggestions={row.suggestions || []}
+                            value={row.matched_product_id}
+                            selectedLabel={row.matched_product_name}
+                            mode="purchase"
+                            onSelect={(id) => selectProduct(idx, id)}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={row.quantity ?? ''}
+                            onChange={(e) => updateOcrRow(idx, { quantity: Number(e.target.value) })}
+                            style={{ width: 70 }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            value={row.uom || ''}
+                            placeholder="PCS"
+                            onChange={(e) => updateOcrRow(idx, { uom: e.target.value })}
+                            style={{ width: 56 }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={row.unit_price ?? ''}
+                            onChange={(e) =>
+                              updateOcrRow(idx, {
+                                unit_price: e.target.value === '' ? null : Number(e.target.value),
+                              })
+                            }
+                            style={{ width: 90 }}
+                          />
+                        </td>
+                        <td className="muted" style={{ whiteSpace: 'nowrap' }}>
+                          {amount != null ? peso(amount) : '—'}
+                        </td>
+                        <td>
+                          <span className="muted" style={{ fontSize: '0.75rem' }}>
+                            {row.status || '—'}
+                            {row.message ? (
+                              <>
+                                <br />
+                                {row.message}
+                              </>
+                            ) : null}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

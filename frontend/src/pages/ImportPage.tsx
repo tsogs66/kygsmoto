@@ -262,21 +262,6 @@ export default function ImportPage() {
     }
   }
 
-  const runLocalWorkbook = async () => {
-    setBusy(true)
-    setError('')
-    setWorkbookResult(null)
-    try {
-      const r = await api.importWorkbookLocal('KYGS APRIL 2025.xlsm', true)
-      setWorkbookResult(r)
-      loadHistory()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Local workbook import failed')
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const runStockImport = async () => {
     if (!stockFile) return
     setBusy(true)
@@ -408,7 +393,7 @@ export default function ImportPage() {
                   style={{
                     whiteSpace: 'pre-wrap',
                     fontSize: '0.8rem',
-                    background: '#f4f1ea',
+                    background: 'var(--surface-2)',
                     padding: '0.75rem',
                     borderRadius: 8,
                     maxHeight: 200,
@@ -608,14 +593,12 @@ export default function ImportPage() {
       <div className="panel" style={{ marginBottom: '1rem' }}>
         <h2>Full KYGS Workbook</h2>
         <p className="muted">
-          Imports INVENTORY ending stocks, SALES history, INFOSHEET, CRITICAL, and DELISTED. Replaces current
-          inventory/sales when replace is on.
+          Upload a KYGS workbook to import INVENTORY ending stocks, SALES history, INFOSHEET,
+          CRITICAL and DELISTED. Replaces current inventory/sales when replace is on. The shop's
+          records live in this app's database — a workbook is only ever a one-off import.
         </p>
         <div className="toolbar">
-          <button className="btn" disabled={busy} onClick={runLocalWorkbook}>
-            {busy ? 'Importing…' : 'Import KYGS APRIL 2025.xlsm from server'}
-          </button>
-          <label className="btn secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+          <label className="btn" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
             Upload .xlsm
             <input
               type="file"

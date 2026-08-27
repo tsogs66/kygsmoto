@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { api, peso } from '../api'
-import type { Customer, Product, Sale } from '../api'
+import { api, JOB_STATUS_LABEL, peso } from '../api'
+import type { Customer, HeldSale, Job, Product, Sale } from '../api'
 import { useSortableRows } from '../hooks/useSortableRows'
+import CustomerSelect from '../components/CustomerSelect'
 
-type CartLine = { product: Product; quantity: number }
+type CartLine = { product: Product; quantity: number; discount: number }
 type Period = 'all' | 'weekly' | 'monthly' | 'yearly'
 
 export default function SalesPage() {
@@ -13,7 +14,7 @@ export default function SalesPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [sales, setSales] = useState<Sale[]>([])
   const [cart, setCart] = useState<CartLine[]>([])
-  const [customerId, setCustomerId] = useState('')
+  const [customerId, setCustomerId] = useState<number | null>(null)
   const [payment, setPayment] = useState('cash')
   const [productSearch, setProductSearch] = useState('')
   const [productId, setProductId] = useState('')
@@ -24,6 +25,15 @@ export default function SalesPage() {
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [error, setError] = useState('')
   const [ok, setOk] = useState('')
+  const [holds, setHolds] = useState<HeldSale[]>([])
+  const [showHold, setShowHold] = useState(false)
+  const [openJobs, setOpenJobs] = useState<Job[]>([])
+  const [showJobs, setShowJobs] = useState(false)
+  const [jobSearch, setJobSearch] = useState('')
+  const [holdInfo, setHoldInfo] = useState({
+    label: '', customer_name: '', contact: '', plate_no: '', motorcycle: '', note: '',
+  })
+  const [holdSaveCustomer, setHoldSaveCustomer] = useState(false)
   const [saleDate, setSaleDate] = useState(() => {
     const d = new Date()
     const pad = (n: number) => String(n).padStart(2, '0')
@@ -39,6 +49,8 @@ export default function SalesPage() {
       if (period === 'monthly') params.set('month', String(month))
     }
     const qs = params.toString() ? `?${params}` : ''
+    api.holds().then((h) => setHolds(h.holds)).catch(() => undefined)
+    api.jobs('open').then((j) => setOpenJobs(j.jobs)).catch(() => undefined)
     Promise.all([api.products(), api.customers(), api.sales(qs)])
       .then(([p, c, s]) => {
         setProducts(p.filter((x) => x.is_active))
@@ -76,8 +88,17 @@ export default function SalesPage() {
   )
   const { sorted, toggle, indicator } = useSortableRows(saleRows, 'sale_date', 'desc')
 
+  /** A line never goes below zero, however large the discount typed. */
+  const lineTotal = (line: CartLine) =>
+    Math.max(0, line.quantity * line.product.sell_price - (line.discount || 0))
+
   const total = useMemo(
-    () => cart.reduce((sum, line) => sum + line.quantity * line.product.sell_price, 0),
+    () => cart.reduce((sum, line) => sum + lineTotal(line), 0),
+    [cart],
+  )
+  const discountTotal = useMemo(
+    () => cart.reduce((sum, line) => sum + Math.min(
+      line.discount || 0, line.quantity * line.product.sell_price), 0),
     [cart],
   )
 
@@ -93,10 +114,170 @@ export default function SalesPage() {
           l.product.id === product.id ? { ...l, quantity: l.quantity + quantity } : l,
         )
       }
-      return [...prev, { product, quantity }]
+      return [...prev, { product, quantity, discount: 0 }]
     })
     setQty('1')
   }
+
+  const selectedCustomer = customers.find((c) => c.id === customerId) || null
+
+  /** What the counter may actually sell: the shelf, less anything held. */
+  const freeStock = (p: Product) =>
+    p.available_qty ?? p.stock_qty - (p.reserved_qty || 0)
+
+  /**
+   * The till refuses to spend parts a parked basket has claimed. That is a
+   * question, not a wall — put it to the counter and let them insist.
+   */
+  const askedToInsist = (err: unknown, action: string) =>
+    err instanceof Error
+    && err.message.startsWith('Not free to ')
+    && window.confirm(`${err.message}\n\n${action}`)
+
+  /**
+   * Cart lines asking for more than the shelf can spare, and what is left.
+   * Read from the freshly loaded product list rather than the snapshot taken
+   * when the line was added, so a hold made since then still shows up.
+   */
+  const overCommitted = useMemo(() => {
+    const out: Record<number, number> = {}
+    for (const line of cart) {
+      if (line.product.sku.toUpperCase().startsWith('LABOR')) continue
+      const live = products.find((p) => p.id === line.product.id) || line.product
+      const free = freeStock(live)
+      if (line.quantity > free) out[line.product.id] = free
+    }
+    return out
+  }, [cart, products])
+
+  const submitHold = (allowShortfall: boolean) =>
+    api.createHold({
+      ...holdInfo,
+      customer_id: customerId,
+      customer_name: holdInfo.customer_name || selectedCustomer?.name || '',
+      payment_method: payment,
+      save_customer: customerId ? false : holdSaveCustomer,
+      allow_shortfall: allowShortfall,
+      lines: cart.map((l) => ({
+        product_id: l.product.id,
+        quantity: l.quantity,
+        unit_price: l.product.sell_price,
+        discount: l.discount || 0,
+      })),
+    })
+
+  const holdSale = async () => {
+    if (!cart.length) {
+      setError('Add at least one item before holding')
+      return
+    }
+    setError('')
+    try {
+      let held
+      try {
+        held = await submitHold(false)
+      } catch (err) {
+        if (!askedToInsist(err, 'Hold it anyway?')) throw err
+        held = await submitHold(true)
+      }
+      setOk(`Held as ${held.reference}${held.customer_name ? ` for ${held.customer_name}` : ''}`
+            + ` · ${held.reserved_units} unit(s) reserved`)
+      setCart([])
+      setCustomerId(null)
+      setShowHold(false)
+      setHoldSaveCustomer(false)
+      setHoldInfo({ label: '', customer_name: '', contact: '', plate_no: '',
+                    motorcycle: '', note: '' })
+      load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not hold the sale')
+    }
+  }
+
+  /** Put a held basket back on the till, and clear the hold. */
+  const resumeHold = async (held: HeldSale) => {
+    const lines = held.lines
+      .map((l) => {
+        const product = products.find((p) => p.id === l.product_id)
+        return product
+          ? { product, quantity: l.quantity, discount: l.discount || 0 }
+          : null
+      })
+      .filter((l): l is CartLine => l !== null)
+
+    if (lines.length !== held.lines.length) {
+      setError('Some held items are no longer in inventory — check the basket')
+    }
+    setCart(lines)
+    setCustomerId(held.customer_id)
+    setPayment(held.payment_method || 'cash')
+    await api.deleteHold(held.id)
+    setOk(`Resumed ${held.reference}`)
+    load()
+  }
+
+  /**
+   * Send the cart to a bike already in the shop.
+   *
+   * Parts and labour go onto the ticket together and stay there until the
+   * job is paid for, so a chain kit fitted this afternoon ends up on the
+   * customer's one invoice rather than as a separate walk-in sale nobody
+   * can tie back to the bike. Stock does not move here — it moves at
+   * checkout, as it does for every other route onto a ticket.
+   */
+  const addCartToJob = async (job: Job) => {
+    if (!cart.length) {
+      setError('Add at least one item before sending it to a job')
+      return
+    }
+    setError('')
+    try {
+      const updated = await api.addJobLines(job.id, cart.map((l) => ({
+        product_id: l.product.id,
+        quantity: l.quantity,
+        unit_price: l.product.sell_price,
+        discount: l.discount || 0,
+      })))
+      setOk(`${cart.length} line(s) added to ${job.job_no}`
+            + `${job.plate_no ? ` · ${job.plate_no}` : ''}`
+            + ` — ticket now ${peso(updated.total)}`)
+      setCart([])
+      setShowJobs(false)
+      setJobSearch('')
+      load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not add to the job')
+    }
+  }
+
+  const matchingJobs = useMemo(() => {
+    const q = jobSearch.trim().toLowerCase()
+    if (!q) return openJobs
+    return openJobs.filter((j) =>
+      [j.job_no, j.customer_name, j.plate_no, j.motorcycle, j.complaint]
+        .some((f) => (f || '').toLowerCase().includes(q)))
+  }, [openJobs, jobSearch])
+
+  const discardHold = async (held: HeldSale) => {
+    if (!window.confirm(`Discard ${held.reference}? The basket is lost.`)) return
+    await api.deleteHold(held.id)
+    setOk(`Discarded ${held.reference}`)
+    load()
+  }
+
+  const submitSale = (allowShortfall: boolean) =>
+    api.createSale({
+      customer_id: customerId,
+      payment_method: payment,
+      sale_date: saleDate ? new Date(saleDate).toISOString() : null,
+      allow_shortfall: allowShortfall,
+      items: cart.map((l) => ({
+        product_id: l.product.id,
+        quantity: l.quantity,
+        unit_price: l.product.sell_price,
+        discount: l.discount || 0,
+      })),
+    })
 
   const checkout = async (e: FormEvent) => {
     e.preventDefault()
@@ -107,16 +288,13 @@ export default function SalesPage() {
       return
     }
     try {
-      const sale = await api.createSale({
-        customer_id: customerId ? Number(customerId) : null,
-        payment_method: payment,
-        sale_date: saleDate ? new Date(saleDate).toISOString() : null,
-        items: cart.map((l) => ({
-          product_id: l.product.id,
-          quantity: l.quantity,
-          unit_price: l.product.sell_price,
-        })),
-      })
+      let sale
+      try {
+        sale = await submitSale(false)
+      } catch (err) {
+        if (!askedToInsist(err, 'Sell it anyway?')) throw err
+        sale = await submitSale(true)
+      }
       setOk(`Sale ${sale.invoice_no} saved · ${peso(sale.total)} · ${new Date(sale.sale_date).toLocaleString()}`)
       setCart([])
       load()
@@ -137,21 +315,75 @@ export default function SalesPage() {
       {error && <div className="error-banner">{error}</div>}
       {ok && <div className="success-banner">{ok}</div>}
 
+      {holds.length > 0 && (
+        <div className="panel" style={{ marginBottom: '1rem' }}>
+          <div className="page-header">
+            <div>
+              <h2>Held sales ({holds.length})</h2>
+              <p className="muted">
+                Parked baskets — oldest first. The parts in them stay on the
+                shelf but are reserved, so nobody else can sell them.
+              </p>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Ref</th><th>Customer</th><th>Why</th>
+                  <th className="num">Lines</th><th className="num">Reserved</th>
+                  <th className="num">Value</th>
+                  <th className="num">Waiting</th><th />
+                </tr>
+              </thead>
+              <tbody>
+                {holds.map((h) => (
+                  <tr key={h.id}>
+                    <td><strong>{h.reference}</strong></td>
+                    <td>
+                      {h.customer_name || 'Walk-in'}
+                      <div className="muted">
+                        {[h.plate_no, h.motorcycle, h.contact].filter(Boolean).join(' · ')}
+                      </div>
+                    </td>
+                    <td className="muted">{h.label || '—'}</td>
+                    <td className="num">{h.line_count}</td>
+                    <td className="num">
+                      {h.reserved_units || '—'}
+                      {h.short_lines > 0 && (
+                        <div className="muted" style={{ color: 'var(--danger)' }}>
+                          {h.short_lines} not on the shelf
+                        </div>
+                      )}
+                    </td>
+                    <td className="num">{peso(h.total)}</td>
+                    <td className="num">{h.held_for_minutes ?? 0}m</td>
+                    <td className="nowrap">
+                      <button className="btn" type="button"
+                              onClick={() => resumeHold(h)}>Resume</button>
+                      <button className="btn secondary" type="button"
+                              onClick={() => discardHold(h)}>Discard</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-2">
         <form className="panel" onSubmit={checkout}>
           <h2>New Sale</h2>
           <div className="form-grid">
             <label>
               Customer
-              <select value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
-                <option value="">Walk-in</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                    {c.motorcycle_model ? ` (${c.motorcycle_model})` : ''}
-                  </option>
-                ))}
-              </select>
+              <CustomerSelect
+                customers={customers}
+                value={customerId}
+                onSelect={(c) => setCustomerId(c ? c.id : null)}
+                onCreated={(c) => setCustomers((prev) => [...prev, c])}
+              />
             </label>
             <label>
               Payment
@@ -189,7 +421,8 @@ export default function SalesPage() {
                 <option value="">Select item ({filteredProducts.length})</option>
                 {filteredProducts.slice(0, 200).map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.sku} — {p.name} (stock {p.stock_qty})
+                    {p.sku} — {p.name} (stock {p.stock_qty}
+                    {p.reserved_qty ? `, ${freeStock(p)} free` : ''})
                   </option>
                 ))}
               </select>
@@ -210,6 +443,13 @@ export default function SalesPage() {
               <div>
                 <strong>{line.product.name}</strong>
                 <div className="muted">{line.product.sku}</div>
+                {line.product.id in overCommitted && (
+                  <div className="muted nowrap"
+                       style={{ color: 'var(--danger)' }}
+                       title="The rest is held at the till or not on the shelf">
+                    only {overCommitted[line.product.id]} free
+                  </div>
+                )}
               </div>
               <input
                 type="number"
@@ -225,7 +465,26 @@ export default function SalesPage() {
                   )
                 }
               />
-              <div>{peso(line.quantity * line.product.sell_price)}</div>
+              <label className="muted" style={{ fontSize: '0.72rem' }}>
+                Less
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={line.discount}
+                  style={{ width: 80 }}
+                  onChange={(e) =>
+                    setCart((prev) =>
+                      prev.map((l) =>
+                        l.product.id === line.product.id
+                          ? { ...l, discount: Math.max(0, Number(e.target.value) || 0) }
+                          : l,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <div>{peso(lineTotal(line))}</div>
               <button
                 type="button"
                 className="btn secondary"
@@ -237,11 +496,141 @@ export default function SalesPage() {
           ))}
 
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1rem', alignItems: 'center' }}>
-            <strong style={{ fontFamily: 'Oswald, sans-serif', fontSize: '1.4rem' }}>Total {peso(total)}</strong>
-            <button className="btn" type="submit">
-              Complete Sale
-            </button>
+            <strong style={{ fontFamily: 'Oswald, sans-serif', fontSize: '1.4rem' }}>
+              Total {peso(total)}
+              {discountTotal > 0 && (
+                <span className="muted" style={{ fontSize: '0.8rem', fontWeight: 400 }}>
+                  {' '}· less {peso(discountTotal)}
+                </span>
+              )}
+            </strong>
+            <span className="toolbar">
+              <button className="btn secondary" type="button"
+                      disabled={!openJobs.length}
+                      title={openJobs.length
+                        ? 'Put these lines on a bike already in the shop'
+                        : 'No bikes in the shop right now'}
+                      onClick={() => { setShowJobs((v) => !v); setShowHold(false) }}>
+                {showJobs ? 'Close job list' : `Add to job (${openJobs.length})`}
+              </button>
+              <button className="btn secondary" type="button"
+                      onClick={() => { setShowHold((v) => !v); setShowJobs(false) }}>
+                {showHold ? 'Cancel hold' : 'Hold sale'}
+              </button>
+              <button className="btn" type="submit">
+                Complete Sale
+              </button>
+            </span>
           </div>
+          {showJobs && (
+            <div className="panel" style={{ marginTop: '1rem' }}>
+              <h3>Add to a bike in the shop</h3>
+              <p className="muted">
+                The lines go onto the ticket and are paid for when the job is
+                released. Nothing is rung up here and no stock moves yet.
+              </p>
+              <input placeholder="Job no, customer, plate or bike…"
+                     value={jobSearch}
+                     onChange={(e) => setJobSearch(e.target.value)} />
+              <div className="table-wrap" style={{ marginTop: '0.7rem', maxHeight: 260 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Job</th><th>Customer</th><th>Bike</th>
+                      <th className="num">On ticket</th><th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {!matchingJobs.length && (
+                      <tr><td colSpan={5} className="muted">No open job matches.</td></tr>
+                    )}
+                    {matchingJobs.map((j) => (
+                      <tr key={j.id}>
+                        <td>
+                          <strong>{j.job_no}</strong>
+                          <div className="muted">{JOB_STATUS_LABEL[j.status] || j.status}</div>
+                        </td>
+                        <td>{j.customer_name || 'Walk-in'}</td>
+                        <td>
+                          {j.motorcycle || '—'}
+                          <div className="muted">{j.plate_no}</div>
+                        </td>
+                        <td className="num">{peso(j.total)}</td>
+                        <td className="nowrap">
+                          <button className="btn" type="button"
+                                  onClick={() => addCartToJob(j)}>
+                            Add {cart.length} line(s)
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {showHold && (
+            <div className="panel" style={{ marginTop: '1rem' }}>
+              <h3>Hold this sale</h3>
+              <p className="muted">
+                Who is it for? Enough detail to find it again when they come back.
+              </p>
+              <div className="grid grid-2">
+                <label className="label">Customer
+                  <CustomerSelect
+                    customers={customers}
+                    value={customerId}
+                    walkInName={holdInfo.customer_name}
+                    onSelect={(c) => {
+                      setCustomerId(c ? c.id : null)
+                      if (c) {
+                        setHoldInfo((h) => ({
+                          ...h,
+                          customer_name: c.name,
+                          contact: c.phone || h.contact,
+                          motorcycle: c.motorcycle_model || h.motorcycle,
+                        }))
+                        setHoldSaveCustomer(false)
+                      }
+                    }}
+                    onWalkInName={(name) =>
+                      setHoldInfo((h) => ({ ...h, customer_name: name }))}
+                    onCreated={(c) => setCustomers((prev) => [...prev, c])}
+                  />
+                </label>
+                <label className="label">Contact number
+                  <input value={holdInfo.contact}
+                         onChange={(e) => setHoldInfo({ ...holdInfo, contact: e.target.value })} />
+                </label>
+                <label className="label">Plate number
+                  <input value={holdInfo.plate_no}
+                         onChange={(e) => setHoldInfo({ ...holdInfo, plate_no: e.target.value })} />
+                </label>
+                <label className="label">Motorcycle
+                  <input value={holdInfo.motorcycle}
+                         onChange={(e) =>
+                           setHoldInfo({ ...holdInfo, motorcycle: e.target.value })} />
+                </label>
+              </div>
+              <label className="label">Why is it on hold?
+                <input placeholder="e.g. gone to the ATM, waiting for a part"
+                       value={holdInfo.label}
+                       onChange={(e) => setHoldInfo({ ...holdInfo, label: e.target.value })} />
+              </label>
+              {!customerId && holdInfo.customer_name.trim() && (
+                <label className="label" style={{ display: 'flex', gap: '0.5rem',
+                                                  alignItems: 'center' }}>
+                  <input type="checkbox" checked={holdSaveCustomer} style={{ width: 'auto' }}
+                         onChange={(e) => setHoldSaveCustomer(e.target.checked)} />
+                  <span>Save “{holdInfo.customer_name.trim()}” as a customer</span>
+                </label>
+              )}
+              <button className="btn" type="button" onClick={holdSale}>
+                Hold {peso(total)}
+              </button>
+            </div>
+          )}
         </form>
 
         <div className="panel">

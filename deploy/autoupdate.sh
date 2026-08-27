@@ -3,7 +3,7 @@
 #
 # Usage (inside LXC, from the clone directory or anywhere):
 #   ./deploy/autoupdate.sh
-#   ./deploy/autoupdate.sh --branch cursor/kygsmoto-sales-inventory-9004
+#   ./deploy/autoupdate.sh --branch cursor/purchase-invoice-lookup-9004
 #   ./deploy/autoupdate.sh --branch main --no-build
 #   REPO_DIR=/root/kygsmoto ./deploy/autoupdate.sh
 #

@@ -240,6 +240,11 @@ export default function InventoryPage() {
                   <td>{p.category_name || '—'}</td>
                   <td>
                     {p.stock_qty} {p.unit}
+                    {!!p.reserved_qty && (
+                      <div className="muted" title="Claimed by baskets held at the till">
+                        {p.reserved_qty} held · {p.available_qty} free
+                      </div>
+                    )}
                   </td>
                   <td>{peso(p.cost_price)}</td>
                   <td>{peso(p.sell_price)}</td>

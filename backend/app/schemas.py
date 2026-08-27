@@ -116,6 +116,8 @@ class ProductOut(ORMModel):
     category_name: Optional[str] = None
     supplier_name: Optional[str] = None
     stock_status: Optional[str] = None
+    reserved_qty: float = 0.0
+    available_qty: Optional[float] = None
 
 
 class StockAdjust(BaseModel):
@@ -128,6 +130,7 @@ class SaleItemIn(BaseModel):
     product_id: int
     quantity: float = Field(gt=0)
     unit_price: Optional[float] = None
+    discount: float = Field(default=0.0, ge=0)
 
 
 class SaleCreate(BaseModel):
@@ -139,6 +142,7 @@ class SaleCreate(BaseModel):
     tax: float = 0
     notes: Optional[str] = None
     sale_date: Optional[datetime] = None
+    allow_shortfall: bool = False
     items: list[SaleItemIn]
 
 
@@ -150,6 +154,7 @@ class SaleItemOut(ORMModel):
     quantity: float
     unit_price: float
     cost_price: float
+    discount: float = 0.0
     line_total: float
 
 
@@ -226,6 +231,8 @@ class ImportPreviewRow(BaseModel):
     product_name: Optional[str] = None
     quantity: Optional[float] = None
     unit_price: Optional[float] = None
+    uom: Optional[str] = None
+    line_amount: Optional[float] = None
     customer: Optional[str] = None
     matched_product_id: Optional[int] = None
     matched_product_name: Optional[str] = None
@@ -268,6 +275,7 @@ class OcrPreviewOut(BaseModel):
     total_qty: float
     message: str = ""
     mode: str = "sale"
+    document_type: str = "freeform"
 
 
 class SalesRowConfirm(BaseModel):
@@ -280,6 +288,8 @@ class SalesRowConfirm(BaseModel):
     quantity: Optional[float] = None
     unit_price: Optional[float] = None
     unit_cost: Optional[float] = None
+    uom: Optional[str] = None
+    line_amount: Optional[float] = None
     customer: Optional[str] = None
     matched_product_id: Optional[int] = None
     product_id: Optional[int] = None
@@ -304,6 +314,7 @@ class PurchaseImportResultOut(BaseModel):
     batch_id: Optional[int] = None
     filename: str
     po_no: Optional[str] = None
+    po_nos: list[str] = []
     rows_imported: int
     rows_skipped: int
     stock_added: float
@@ -448,3 +459,78 @@ class InventoryReportOut(BaseModel):
     low_stock: list[dict]
     by_category: list[dict]
     movements: list[dict] = []
+
+# ---- Job queue ----
+
+
+class JobLineIn(BaseModel):
+    product_id: int
+    quantity: float = Field(gt=0)
+    unit_price: Optional[float] = None
+    discount: float = Field(default=0.0, ge=0)
+
+
+class JobCreate(BaseModel):
+    customer_id: Optional[int] = None
+    save_customer: bool = False
+    customer_name: Optional[str] = None
+    contact: Optional[str] = None
+    plate_no: Optional[str] = None
+    motorcycle: Optional[str] = None
+    complaint: Optional[str] = None
+    notes: Optional[str] = None
+    mechanic: Optional[str] = None
+    priority: str = "normal"
+    lines: list[JobLineIn] = []
+
+
+class JobUpdate(BaseModel):
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    customer_name: Optional[str] = None
+    contact: Optional[str] = None
+    plate_no: Optional[str] = None
+    motorcycle: Optional[str] = None
+    complaint: Optional[str] = None
+    notes: Optional[str] = None
+    mechanic: Optional[str] = None
+
+
+class JobCancel(BaseModel):
+    reason: str = Field(min_length=3)
+
+
+class JobLinesIn(BaseModel):
+    """A basket of work added to a ticket in one go — e.g. a cart from the till."""
+
+    lines: list[JobLineIn]
+
+
+class JobCheckout(BaseModel):
+    payment_method: str = "cash"
+    payment_status: str = "paid"
+    discount: float = 0.0
+    allow_negative_stock: bool = False
+
+# ---- Held sales ----
+
+
+class HeldSaleLineIn(BaseModel):
+    product_id: int
+    quantity: float = Field(gt=0)
+    unit_price: Optional[float] = None
+    discount: float = Field(default=0.0, ge=0)
+
+
+class HeldSaleCreate(BaseModel):
+    label: Optional[str] = None
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    contact: Optional[str] = None
+    plate_no: Optional[str] = None
+    motorcycle: Optional[str] = None
+    note: Optional[str] = None
+    payment_method: str = "cash"
+    save_customer: bool = False
+    allow_shortfall: bool = False
+    lines: list[HeldSaleLineIn]

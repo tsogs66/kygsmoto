@@ -21,7 +21,333 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json()
 }
 
+
+// ---------------------------------------------------------------- analytics
+
+export interface MoverRow {
+  product_id: number
+  sku: string
+  name: string
+  supplier: string
+  unit_cost: number
+  sell_price: number
+  on_hand: number
+  stock_value: number
+  sold_qty: number
+  revenue: number
+  demand_value: number
+  gross_profit: number
+  daily_rate: number
+  monthly_rate: number
+  demand_pattern: string
+  method: string
+  abc: string
+  xyz: string
+  abc_xyz: string
+  movement: string
+  last_sold: string | null
+  lead_time_days: number
+  review_days: number
+  safety_stock: number
+  reorder_point: number
+  reorder_level: number
+  eoq: number
+  days_of_cover: number | null
+  urgency: number
+  value_share: number
+  cumulative_share: number
+}
+
+export interface ReorderRow extends MoverRow {
+  suggested_qty: number
+  order_cost: number
+  projected_stockout: string | null
+  reason: string
+}
+
+export interface AnalyticsWindow {
+  from: string
+  to: string
+  days: number
+  measured_from?: string
+}
+
+export interface MoversOut {
+  direction: string
+  window: AnalyticsWindow
+  count: number
+  items: MoverRow[]
+}
+
+export interface ReorderOut {
+  window: AnalyticsWindow
+  count: number
+  total_cost: number
+  by_supplier: { supplier: string; supplier_id: number | null; lines: number; units: number; cost: number }[]
+  suggestions: ReorderRow[]
+}
+
+export interface AbcOut {
+  window: AnalyticsWindow
+  summary: { class: string; items: number; revenue: number; stock_value: number; gross_profit: number }[]
+  matrix: { cell: string; items: number; policy: string }[]
+  items: MoverRow[]
+}
+
+export interface OverviewOut {
+  window: AnalyticsWindow
+  sku_count: number
+  stock_value: number
+  movement: Record<string, number>
+  dead_stock_value: number
+  dead_stock_pct: number
+  out_of_stock: number
+  fast_movers_out_of_stock: number
+  below_reorder_point: number
+  reorder_lines: number
+  reorder_cost: number
+  stock_turnover_annualised: number
+  urgent: ReorderRow[]
+  at_risk_fast_movers: MoverRow[]
+}
+
+export interface ProductForecast {
+  product: {
+    id: number; sku: string; name: string; stock_qty: number
+    cost_price: number; sell_price: number; reorder_level: number; supplier: string
+  }
+  window: AnalyticsWindow
+  pattern: { pattern: string; method?: string; adi?: number; cv2?: number }
+  daily_rate: number
+  forecast: { next_7d: number; next_30d: number; next_90d: number }
+  replenishment: {
+    lead_time_days: number; review_days: number; safety_stock: number
+    reorder_point: number; economic_order_qty: number
+    days_of_cover: number | null; projected_stockout: string | null
+  }
+  weekly_demand: { week_of: string; qty: number }[]
+  weekday_seasonality: { day: string; index: number }[]
+}
+
+
+// ------------------------------------------------------------------- jobs
+
+/** What each ticket status is called at the counter. */
+export const JOB_STATUS_LABEL: Record<string, string> = {
+  queued: 'Waiting',
+  in_progress: 'In progress',
+  ready: 'Ready for release',
+  completed: 'Completed',
+  cancelled: 'Cancelled',
+}
+
+export type JobLineInput = {
+  product_id: number
+  quantity: number
+  unit_price?: number
+  discount?: number
+}
+
+export interface JobLine {
+  id: number
+  product_id: number
+  sku: string | null
+  product_name: string
+  quantity: number
+  unit_price: number
+  discount: number
+  line_total: number
+  is_labour: boolean
+  on_hand: number
+  /** Units of this part claimed by baskets parked at the till. */
+  reserved: number
+  /** on_hand minus reserved — what this ticket may actually spend. */
+  available: number
+  short: boolean
+}
+
+export interface Job {
+  id: number
+  job_no: string
+  status: string
+  priority: string
+  customer_id: number | null
+  customer_name: string
+  contact: string
+  plate_no: string
+  motorcycle: string
+  complaint: string
+  notes: string
+  mechanic: string
+  created_at: string
+  started_at: string | null
+  ready_at: string | null
+  completed_at: string | null
+  cancelled_at: string | null
+  cancel_reason: string
+  sale_id: number | null
+  invoice_no: string | null
+  hours_open: number | null
+  lines: JobLine[]
+  line_count: number
+  parts_total: number
+  labour_total: number
+  discount_total: number
+  total: number
+  short_lines: number
+}
+
+export interface JobBoard {
+  counts: Record<string, number>
+  open_total: number
+  open_value: number
+  jobs: Job[]
+}
+
+export interface JobCreateIn {
+  customer_id?: number | null
+  save_customer?: boolean
+  customer_name?: string
+  contact?: string
+  plate_no?: string
+  motorcycle?: string
+  complaint?: string
+  notes?: string
+  mechanic?: string
+  priority?: string
+  lines?: { product_id: number; quantity: number; unit_price?: number; discount?: number }[]
+}
+
+
+// ------------------------------------------------------------ held sales
+
+export interface HeldLine {
+  id: number
+  product_id: number
+  sku: string | null
+  product_name: string
+  quantity: number
+  unit_price: number
+  discount: number
+  line_total: number
+  is_labour: boolean
+  /** Stock on the shelf right now — a stock-take can shrink it under a hold. */
+  on_hand?: number
+  short?: boolean
+}
+
+export interface HeldSale {
+  id: number
+  reference: string
+  label: string
+  customer_id: number | null
+  customer_name: string
+  contact: string
+  plate_no: string
+  motorcycle: string
+  note: string
+  payment_method: string
+  created_at: string
+  held_for_minutes: number | null
+  lines: HeldLine[]
+  line_count: number
+  /** Part units this basket has reserved; labour reserves nothing. */
+  reserved_units: number
+  short_lines: number
+  parts_total: number
+  labour_total: number
+  discount_total: number
+  total: number
+}
+
+export interface HeldSaleCreateIn {
+  label?: string
+  customer_id?: number | null
+  customer_name?: string
+  contact?: string
+  plate_no?: string
+  motorcycle?: string
+  note?: string
+  payment_method?: string
+  save_customer?: boolean
+  /** Park a basket over stock the shop cannot currently back. */
+  allow_shortfall?: boolean
+  lines: { product_id: number; quantity: number; unit_price?: number; discount?: number }[]
+}
+
 export const api = {
+  holds: (q = '') =>
+    request<{ holds: HeldSale[]; count: number; total_value: number }>(
+      `/holds${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+  hold: (id: number) => request<HeldSale>(`/holds/${id}`),
+  createHold: (body: HeldSaleCreateIn) =>
+    request<HeldSale>('/holds', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  deleteHold: (id: number) =>
+    request<{ deleted: boolean; reference: string }>(`/holds/${id}`, { method: 'DELETE' }),
+
+  jobBoard: () => request<JobBoard>('/jobs/board'),
+  jobs: (status = 'open', q = '') => {
+    const p = new URLSearchParams({ status })
+    if (q) p.set('q', q)
+    return request<{ jobs: Job[] }>(`/jobs?${p}`)
+  },
+  job: (id: number) => request<Job>(`/jobs/${id}`),
+  createJob: (body: JobCreateIn) =>
+    request<Job>('/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  updateJob: (id: number, body: Record<string, string>) =>
+    request<Job>(`/jobs/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  addJobLine: (id: number, product_id: number, quantity: number, discount = 0) =>
+    request<Job>(`/jobs/${id}/lines`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product_id, quantity, discount }),
+    }),
+  /** Push a whole cart onto a ticket in one call — all lines or none. */
+  addJobLines: (id: number, lines: JobLineInput[]) =>
+    request<Job>(`/jobs/${id}/lines/bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lines }),
+    }),
+  removeJobLine: (id: number, lineId: number) =>
+    request<Job>(`/jobs/${id}/lines/${lineId}`, { method: 'DELETE' }),
+  cancelJob: (id: number, reason: string) =>
+    request<Job>(`/jobs/${id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    }),
+  checkoutJob: (id: number, body: { discount?: number; payment_method?: string; allow_negative_stock?: boolean }) =>
+    request<{ job: Job; sale: Sale }>(`/jobs/${id}/checkout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  movers: (direction: 'fast' | 'slow' | 'dead', days = 90, limit = 100) =>
+    request<MoversOut>(`/analytics/movers?direction=${direction}&days=${days}&limit=${limit}`),
+  reorder: (days = 90, supplierId?: number) => {
+    const q = new URLSearchParams({ days: String(days) })
+    if (supplierId) q.set('supplier_id', String(supplierId))
+    return request<ReorderOut>(`/analytics/reorder?${q}`)
+  },
+  abc: (days = 90) => request<AbcOut>(`/analytics/abc?days=${days}`),
+  stockOverview: (days = 90) => request<OverviewOut>(`/analytics/overview?days=${days}`),
+  productForecast: (id: number, days = 180) =>
+    request<ProductForecast>(`/analytics/products/${id}/forecast?days=${days}`),
+
   dashboard: (year?: number, month?: number) => {
     const q = new URLSearchParams()
     if (year) q.set('year', String(year))
@@ -162,12 +488,7 @@ export const api = {
     fd.append('replace_existing', String(replaceExisting))
     return request<WorkbookImportResult>('/imports/workbook', { method: 'POST', body: fd })
   },
-  importWorkbookLocal: async (path = 'KYGS APRIL 2025.xlsm', replaceExisting = true) => {
-    const fd = new FormData()
-    fd.append('path', path)
-    fd.append('replace_existing', String(replaceExisting))
-    return request<WorkbookImportResult>('/imports/workbook/local', { method: 'POST', body: fd })
-  },
+
   previewStockImport: async (file: File, mode: 'set' | 'adjust' | 'upsert' = 'set') => {
     const fd = new FormData()
     fd.append('file', file)
@@ -200,14 +521,21 @@ export type Product = {
   category_name?: string
   supplier_name?: string
   stock_status?: string
+  /** Units claimed by baskets parked at the till. */
+  reserved_qty?: number
+  /** stock_qty minus reserved_qty — what the counter may actually sell. */
+  available_qty?: number
 }
 
 export type Category = { id: number; name: string; description?: string }
 export type Customer = {
   id: number
   name: string
-  phone?: string
-  motorcycle_model?: string
+  phone?: string | null
+  email?: string | null
+  address?: string | null
+  motorcycle_model?: string | null
+  notes?: string | null
 }
 export type Supplier = { id: number; name: string; phone?: string; email?: string }
 
@@ -244,7 +572,11 @@ export type SaleCreate = {
   payment_method: string
   discount?: number
   sale_date?: string | null
-  items: { product_id: number; quantity: number; unit_price?: number }[]
+  /** Sell parts a held basket has already claimed, having been warned. */
+  allow_shortfall?: boolean
+  items: {
+    product_id: number; quantity: number; unit_price?: number; discount?: number
+  }[]
 }
 
 export type Purchase = {
@@ -419,6 +751,8 @@ export type OcrEditableRow = {
   quantity?: number | null
   unit_price?: number | null
   unit_cost?: number | null
+  uom?: string | null
+  line_amount?: number | null
   customer?: string | null
   matched_product_id?: number | null
   matched_product_name?: string | null
@@ -440,6 +774,7 @@ export type OcrPreview = {
   total_qty: number
   message: string
   mode?: string
+  document_type?: string
 }
 
 export type PurchaseImportResult = {

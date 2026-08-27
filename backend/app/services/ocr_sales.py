@@ -112,6 +112,39 @@ _INLINE_DATE_PREFIX = re.compile(
     r"^(?P<date>\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})\s+[-:]?\s*(?P<rest>.+)$"
 )
 
+# Quotation / Detailed Invoice Register (supplier printed purchase invoices)
+_UOM_TOKEN = r"(?:PCS?|PC|RL|SET|SETS|PCK|PACK|BOX|UNIT|UN|EA|CTN|ROLL|LTR|LTRS?|KG|BTL|BOTTLE)"
+_INVOICE_ITEM_RE = re.compile(
+    rf"^(?P<code>[A-Za-z0-9][A-Za-z0-9\-_/]{{0,40}})\s+"
+    rf"(?P<desc>.+?)\s+"
+    rf"(?P<qty>\d+(?:\.\d+)?)\s+"
+    rf"(?P<uom>{_UOM_TOKEN})\s+"
+    rf"(?P<price>\d[\d,]*(?:\.\d+)?)\s+"
+    rf"(?P<amount>\d[\d,]*(?:\.\d+)?)\s*$",
+    re.I,
+)
+# OCR sometimes drops UOM: CODE DESC QTY PRICE AMOUNT
+_INVOICE_ITEM_NO_UOM_RE = re.compile(
+    r"^(?P<code>[A-Za-z0-9][A-Za-z0-9\-_/]{0,40})\s+"
+    r"(?P<desc>.+?)\s+"
+    r"(?P<qty>\d+(?:\.\d+)?)\s+"
+    r"(?P<price>\d[\d,]*(?:\.\d+)?)\s+"
+    r"(?P<amount>\d[\d,]*(?:\.\d+)?)\s*$",
+)
+_TRAN_NO_RE = re.compile(r"(?:tran(?:saction)?\s*no\.?|tran\s*#)\s*[:#]?\s*([0-9\-]+)", re.I)
+_INV_NO_RE = re.compile(r"(?:inv(?:oice)?\s*no\.?|inv\s*#)\s*[:#]?\s*([0-9\-]+)", re.I)
+_DATETIME_LINE_RE = re.compile(
+    r"^(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})\s+(\d{1,2}:\d{2}\s*(?:AM|PM)?)\s*$",
+    re.I,
+)
+_SKIP_INVOICE_LINE_RE = re.compile(
+    r"^(item\s*code|description|quantity|uom|price|amount|customer|address|"
+    r"totals?|sub\s*totals?|grand\s*totals?|discount|page\s*\d|"
+    r"quotation|detailed\s+invoice|invoice\s+register|"
+    r"\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\s+to\s+)",
+    re.I,
+)
+
 
 def _normalize_ocr(text: str) -> str:
     """Normalize common OCR confusions for matching."""
@@ -123,10 +156,53 @@ def _normalize_ocr(text: str) -> str:
 
 
 def _sku_normalize(text: str) -> str:
+    """Normalize SKU / supplier item codes for matching (strip noise, OCR confusions)."""
     t = text.upper().strip()
     t = t.replace(" ", "").replace("_", "-")
-    # Common OCR: O/0 I/1 S/5 B/8 in codes
-    return t
+    # Common OCR confusions inside codes (apply after stripping spaces)
+    # Keep hyphenated structure; map lookalikes only on alphanumeric runs
+    out = []
+    for ch in t:
+        if ch == "O":
+            out.append("0")  # O→0 often in numeric segments; reversible via compare both forms
+        elif ch == "I" or ch == "L":
+            out.append("1")
+        elif ch == "S":
+            out.append("5")
+        elif ch == "B":
+            out.append("8")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _sku_key(text: str) -> str:
+    """Loose key: uppercase, strip non-alnum (for RS8GEAROIL vs RS8-GEAR-OIL)."""
+    return re.sub(r"[^A-Z0-9]", "", (text or "").upper())
+
+
+def _sku_variants(text: str) -> set[str]:
+    raw = (text or "").strip().upper()
+    if not raw:
+        return set()
+    variants = {
+        raw,
+        raw.replace(" ", ""),
+        raw.replace("_", "-"),
+        raw.replace("-", ""),
+        _sku_key(raw),
+        _sku_normalize(raw),
+        _sku_key(_sku_normalize(raw)),
+    }
+    # Also keep form without OCR confusion map
+    plain = raw.replace(" ", "").replace("_", "-")
+    variants.add(plain)
+    variants.add(re.sub(r"[^A-Z0-9]", "", plain))
+    return {v for v in variants if v}
+
+
+def _money(raw: str) -> float:
+    return float(str(raw).replace(",", "").strip())
 
 
 def _parse_date_value(raw: str) -> Optional[str]:
@@ -151,7 +227,7 @@ def _parse_date_value(raw: str) -> Optional[str]:
     try:
         import pandas as pd
 
-        dt = pd.to_datetime(raw, dayfirst=True, errors="coerce")
+        dt = pd.to_datetime(raw, dayfirst=False, errors="coerce")
         if pd.notna(dt):
             return dt.date().isoformat()
     except Exception:
@@ -174,12 +250,156 @@ def _clean_label(label: str) -> str:
     return label.strip()
 
 
-def parse_ocr_lines(raw_text: str) -> list[dict]:
-    """Parse OCR text into candidate sales lines with **per-line dates**.
+def looks_like_invoice_register(raw_text: str) -> bool:
+    """Detect Quotation / Detailed Invoice Register purchase documents."""
+    if not raw_text:
+        return False
+    lower = raw_text.lower()
+    signals = 0
+    if "quotation" in lower or "invoice register" in lower or "detailed invoice" in lower:
+        signals += 2
+    if "item code" in lower and "description" in lower:
+        signals += 2
+    if re.search(r"\btran\s*no", lower) or re.search(r"\binv\s*no", lower):
+        signals += 1
+    if re.search(r"\buom\b", lower) and re.search(r"\bamount\b", lower):
+        signals += 1
+    # Many lines look like CODE … QTY UOM PRICE AMOUNT
+    hits = sum(1 for line in raw_text.splitlines() if _INVOICE_ITEM_RE.match(line.strip()))
+    if hits >= 2:
+        signals += 2
+    elif hits == 1:
+        signals += 1
+    return signals >= 2
 
-    Date headers update the current date for following item lines. Inline dates
-    on a line override for that line only.
+
+def parse_invoice_register(raw_text: str) -> list[dict]:
+    """Parse printed Quotation / Detailed Invoice Register purchase invoices.
+
+    Columns: Item Code | Description | Quantity | UOM | Price | Amount
+    Supports multiple Tran/Inv sections on one page (separate invoice_no + date).
+    Unit cost = Price (not Amount).
     """
+    fallback_date = _parse_date_from_text(raw_text)
+    current_date = fallback_date
+    current_invoice: Optional[str] = None
+    rows: list[dict] = []
+    row_number = 1
+
+    for raw_line in raw_text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line or len(line) < 3:
+            continue
+
+        # Transaction / invoice section headers
+        tm = _TRAN_NO_RE.search(line)
+        im = _INV_NO_RE.search(line)
+        if tm or im:
+            inv = None
+            if im:
+                inv = im.group(1).lstrip("0") or im.group(1)
+                # Prefer readable inv no; keep last significant digits
+                inv = im.group(1).strip()
+            elif tm:
+                inv = tm.group(1).strip()
+            current_invoice = inv
+            # Date may sit on same line
+            parsed = _parse_date_from_text(line)
+            if parsed:
+                current_date = parsed
+            continue
+
+        dm = _DATETIME_LINE_RE.match(line)
+        if dm:
+            parsed = _parse_date_value(dm.group(1))
+            if parsed:
+                current_date = parsed
+            continue
+
+        if _SKIP_INVOICE_LINE_RE.match(line):
+            # Range title may still hold a useful end date
+            if re.search(r"\bto\b", line, re.I):
+                dates = _DATE_TOKEN_RE.findall(line)
+                if dates:
+                    parsed = _parse_date_value(dates[-1])
+                    if parsed and not current_date:
+                        current_date = parsed
+            continue
+
+        lower = line.lower()
+        if lower.startswith(("total", "subtotal", "grand", "discount", "cash", "change", "customer:", "address:")):
+            continue
+
+        # Pure date header
+        if _DATE_LINE_RE.match(line) or (_DATE_TOKEN_RE.fullmatch(line) and len(line) <= 14):
+            parsed = _parse_date_from_text(line)
+            if parsed:
+                current_date = parsed
+            continue
+
+        uom = None
+        m = _INVOICE_ITEM_RE.match(line)
+        if m:
+            uom = m.group("uom").upper()
+            if uom == "PC":
+                uom = "PCS"
+        else:
+            m = _INVOICE_ITEM_NO_UOM_RE.match(line)
+            if not m:
+                continue
+            # Guard: description must have letters (avoid numeric junk)
+            if not re.search(r"[A-Za-z]{2,}", m.group("desc")):
+                continue
+
+        code = m.group("code").strip().upper()
+        # Skip header leftovers mistaken as codes
+        if code.lower() in {"item", "code", "qty", "uom", "price", "amount", "description"}:
+            continue
+        desc = _clean_label(m.group("desc"))
+        qty = float(m.group("qty"))
+        price = _money(m.group("price"))
+        amount = _money(m.group("amount"))
+        if qty <= 0 or price < 0:
+            continue
+        # If OCR swapped price/amount, prefer amount/qty when amount ≈ qty*price fails badly
+        expected = round(qty * price, 2)
+        if amount > 0 and price > 0 and abs(expected - amount) > max(1.0, amount * 0.15):
+            # Maybe price was OCR'd as amount column only — derive unit from amount
+            derived = round(amount / qty, 2)
+            if derived > 0:
+                price = derived
+
+        rows.append({
+            "row_number": row_number,
+            "invoice_no": current_invoice,
+            "sale_date": current_date,
+            "sku": code,
+            "product_name": desc,
+            "quantity": qty,
+            "unit_price": price,
+            "uom": uom,
+            "line_amount": amount,
+            "customer": None,
+            "ocr_text": raw_line.strip(),
+            "status": "parsed",
+            "message": f"Invoice item {code}" + (f" · Inv {current_invoice}" if current_invoice else ""),
+        })
+        row_number += 1
+
+    return rows
+
+
+def parse_ocr_lines(raw_text: str) -> list[dict]:
+    """Parse OCR text into candidate sales/purchase lines with **per-line dates**.
+
+    Prefer Quotation/Invoice Register table parsing when that layout is detected;
+    otherwise use free-form handwritten heuristics.
+    """
+    if looks_like_invoice_register(raw_text):
+        register_rows = parse_invoice_register(raw_text)
+        if register_rows:
+            return register_rows
+
     fallback_date = _parse_date_from_text(raw_text)
     current_date = fallback_date
     rows: list[dict] = []
@@ -221,29 +441,39 @@ def parse_ocr_lines(raw_text: str) -> list[dict]:
         label = None
         qty = None
         price = None
+        uom = None
 
-        m = _SKU_LINE_RE.match(line)
-        if m:
-            sku = m.group("sku").strip()
-            label = _clean_label(m.group("label"))
-            qty = float(m.group("qty"))
-            price = float(m.group("price").replace(",", ""))
+        # Try invoice-style line even outside full-document detection
+        inv_m = _INVOICE_ITEM_RE.match(line)
+        if inv_m:
+            sku = inv_m.group("code").strip().upper()
+            label = _clean_label(inv_m.group("desc"))
+            qty = float(inv_m.group("qty"))
+            uom = inv_m.group("uom").upper()
+            price = _money(inv_m.group("price"))
         else:
-            m = _QTY_PRICE_RE.match(line)
+            m = _SKU_LINE_RE.match(line)
             if m:
+                sku = m.group("sku").strip()
                 label = _clean_label(m.group("label"))
                 qty = float(m.group("qty"))
                 price = float(m.group("price").replace(",", ""))
             else:
-                m = _SIMPLE_QTY_RE.match(line)
+                m = _QTY_PRICE_RE.match(line)
                 if m:
                     label = _clean_label(m.group("label"))
                     qty = float(m.group("qty"))
+                    price = float(m.group("price").replace(",", ""))
                 else:
-                    m = _TRAILING_QTY_RE.match(line)
-                    if m and not re.fullmatch(r"\d[\d,./\-]*", m.group("label")):
+                    m = _SIMPLE_QTY_RE.match(line)
+                    if m:
                         label = _clean_label(m.group("label"))
                         qty = float(m.group("qty"))
+                    else:
+                        m = _TRAILING_QTY_RE.match(line)
+                        if m and not re.fullmatch(r"\d[\d,./\-]*", m.group("label")):
+                            label = _clean_label(m.group("label"))
+                            qty = float(m.group("qty"))
 
         if not label or qty is None or qty <= 0:
             if len(line) >= 4 and not re.fullmatch(r"[\d\s.,/\-]+", line):
@@ -255,6 +485,8 @@ def parse_ocr_lines(raw_text: str) -> list[dict]:
                     "product_name": _clean_label(line),
                     "quantity": 1.0,
                     "unit_price": None,
+                    "uom": None,
+                    "line_amount": None,
                     "customer": None,
                     "ocr_text": raw_line.strip(),
                     "status": "needs_review",
@@ -273,10 +505,12 @@ def parse_ocr_lines(raw_text: str) -> list[dict]:
             "row_number": row_number,
             "invoice_no": None,
             "sale_date": line_date,
-            "sku": sku,
+            "sku": sku.upper() if sku else None,
             "product_name": label,
             "quantity": qty,
             "unit_price": price,
+            "uom": uom,
+            "line_amount": round(qty * price, 2) if price is not None else None,
             "customer": None,
             "ocr_text": raw_line.strip(),
             "status": "parsed",
@@ -302,19 +536,35 @@ def _score_product(product: Product, query: str) -> float:
     hay = f"{sku} {name} {brand} {fitment}"
     sku_n = _sku_normalize(product.sku or "")
     q_sku = _sku_normalize(q)
+    prod_keys = _sku_variants(product.sku or "")
+    query_keys = _sku_variants(q)
 
     score = 0.0
+    # Exact / normalized item-code match (supplier invoice Item Code ↔ inventory SKU)
+    if prod_keys & query_keys:
+        return 100.0
     if sku == q or sku_n == q_sku:
+        return 100.0
+    # Query may be "1732 OIL HAVOLINE…" — score against first token as code
+    first = (query.strip().split() or [""])[0]
+    first_keys = _sku_variants(first)
+    if first_keys and (prod_keys & first_keys):
         return 100.0
     if sku and (sku in q or q in sku):
         score = max(score, 92.0)
     if sku_n and len(sku_n) >= 3 and (sku_n in q_sku or q_sku in sku_n):
         score = max(score, 90.0)
-    # Fuzzy SKU (OCR typos)
-    if sku_n and len(sku_n) >= 3:
+    # Fuzzy SKU (OCR typos) — require enough length to avoid false hits on "78"
+    if sku_n and len(sku_n) >= 4:
         ratio = SequenceMatcher(None, sku_n, q_sku).ratio()
         if ratio >= 0.75:
             score = max(score, 70.0 + ratio * 25.0)
+        # Also fuzzy against first token only
+        first_n = _sku_normalize(first)
+        if first_n and len(first_n) >= 3:
+            r2 = SequenceMatcher(None, sku_n, first_n).ratio()
+            if r2 >= 0.86:
+                score = max(score, 85.0 + r2 * 10.0)
     if name == q:
         score = max(score, 88.0)
     if q and name and q in name:
@@ -385,54 +635,82 @@ def _rank_products(products: list[Product], query: str, limit: int = 12) -> list
 
 
 def _match_sku_in_text(products: list[Product], text: str) -> Optional[Product]:
-    """Find inventory SKU mentioned inside free OCR text (fast exact/substring first)."""
+    """Find inventory SKU / supplier item code mentioned inside OCR text."""
     if not text:
         return None
-    hay = _sku_normalize(text)
-    # Exact / substring — O(n), no fuzzy loops
+    hay = text.upper()
+    hay_key = _sku_key(hay)
+    hay_norm = _sku_normalize(hay)
+    # Prefer longer codes first so M275X18MX2 beats 275
     ranked = sorted(
-        (p for p in products if p.sku and len(p.sku) >= 3),
+        (p for p in products if p.sku and len(p.sku) >= 2),
         key=lambda p: len(p.sku or ""),
         reverse=True,
     )
+    # Exact / normalized code containment
     for p in ranked:
-        sku_n = _sku_normalize(p.sku or "")
-        if sku_n and sku_n in hay:
-            return p
+        variants = _sku_variants(p.sku or "")
+        for v in variants:
+            if len(v) < 2:
+                continue
+            # Short numeric codes (e.g. 78, 85) require token boundary
+            if v.isdigit() and len(v) <= 3:
+                if re.search(rf"(?<![A-Z0-9]){re.escape(v)}(?![A-Z0-9])", hay_key):
+                    return p
+                continue
+            if v in hay_key or v in hay_norm or v in hay.replace(" ", ""):
+                return p
+
     # Limited fuzzy only on OCR code-like tokens
-    chunks = re.findall(r"[A-Z0-9\-/]{3,}", hay)
+    chunks = re.findall(r"[A-Z0-9\-/]{3,}", _sku_normalize(text))
     if not chunks:
         return None
     best: tuple[float, Optional[Product]] = (0.0, None)
-    for p in ranked[:400]:
+    for p in ranked[:500]:
         sku_n = _sku_normalize(p.sku or "")
+        if len(sku_n) < 3:
+            continue
         for chunk in chunks:
             ratio = SequenceMatcher(None, sku_n, chunk).ratio()
-            if ratio > best[0]:
+            need = 0.92 if len(sku_n) <= 4 else 0.86
+            if ratio > best[0] and ratio >= need:
                 best = (ratio, p)
-    return best[1] if best[0] >= 0.86 else None
+    return best[1] if best[0] else None
 
 
 def match_ocr_rows(db: Session, rows: list[dict], mode: str = "sale") -> list[dict]:
     products = db.query(Product).filter(Product.is_active.is_(True)).all()
     by_id = {p.id: p for p in products}
+    by_variant: dict[str, Product] = {}
+    for p in products:
+        for v in _sku_variants(p.sku or ""):
+            if v and v not in by_variant:
+                by_variant[v] = p
+
     enriched = []
     for row in rows:
         sku = row.get("sku")
         name = row.get("product_name")
         ocr_text = row.get("ocr_text") or ""
         qty = float(row.get("quantity") or 0)
-        # Prefer shorter query for ranking (avoid scoring twice on duplicate text)
         query = f"{sku or ''} {name or ''}".strip() or ocr_text
 
-        product = find_product(db, sku, name)
+        product = None
+        if sku:
+            for v in _sku_variants(str(sku)):
+                product = by_variant.get(v)
+                if product:
+                    break
+        if not product:
+            product = find_product(db, sku, name)
         if not product:
             product = _match_sku_in_text(products, f"{sku or ''} {ocr_text} {name or ''}")
 
         suggestions = _rank_products(products, query, limit=12) if query else []
+        auto_threshold = 50 if sku else 58
         if not product and suggestions:
             top = suggestions[0]
-            if top["score"] >= 58:
+            if top["score"] >= auto_threshold:
                 product = by_id.get(top["id"])
 
         if product:
@@ -462,12 +740,17 @@ def match_ocr_rows(db: Session, rows: list[dict], mode: str = "sale") -> list[di
                 entry["unit_price"] = default_price
             entry["status"] = "matched"
             verb = "purchase receive" if mode == "purchase" else "sale import"
-            entry["message"] = f"Matched {product.sku} — review before {verb}"
+            uom = entry.get("uom")
+            uom_bit = f" · {uom}" if uom else ""
+            entry["message"] = f"Matched {product.sku}{uom_bit} — review before {verb}"
         else:
             entry["status"] = "unmatched"
+            code_bit = f"Item code {sku}" if sku else "No SKU"
             entry["message"] = (
-                f"Top suggestion: {suggestions[0]['sku']}" if suggestions else "Select inventory item (use search)"
+                f"{code_bit} · top: {suggestions[0]['sku']}" if suggestions else f"{code_bit} — search inventory"
             )
+        if entry.get("line_amount") in (None, 0, 0.0) and entry.get("unit_price") and qty:
+            entry["line_amount"] = round(float(entry["unit_price"]) * qty, 2)
         enriched.append(entry)
 
     next_no = (enriched[-1]["row_number"] + 1) if enriched else 1
@@ -485,6 +768,8 @@ def match_ocr_rows(db: Session, rows: list[dict], mode: str = "sale") -> list[di
             "product_name": None,
             "quantity": 1.0,
             "unit_price": None,
+            "uom": None,
+            "line_amount": None,
             "customer": None,
             "ocr_text": None,
             "matched_product_id": None,
@@ -515,7 +800,9 @@ def preview_sales_photo(
             "error": str(exc),
         }
 
-    parsed = parse_ocr_lines(ocr.get("raw_text") or "") if ocr.get("raw_text") else []
+    raw = ocr.get("raw_text") or ""
+    register = looks_like_invoice_register(raw)
+    parsed = parse_ocr_lines(raw) if raw else []
     if not parsed:
         parsed = [
             {
@@ -526,6 +813,8 @@ def preview_sales_photo(
                 "product_name": None,
                 "quantity": 1.0,
                 "unit_price": None,
+                "uom": None,
+                "line_amount": None,
                 "customer": None,
                 "ocr_text": None,
                 "status": "blank",
@@ -553,15 +842,22 @@ def preview_sales_photo(
     unmatched = sum(1 for r in rows if r.get("status") == "unmatched")
     total_qty = sum(float(r.get("quantity") or 0) for r in rows if r.get("status") == "matched")
     dates = sorted({r.get("sale_date") for r in rows if r.get("sale_date")})
+    invoices = sorted({r.get("invoice_no") for r in rows if r.get("invoice_no")})
     kind = "purchase receive" if mode == "purchase" else "sales import"
     date_note = f" Dates found: {', '.join(dates)}." if dates else ""
+    inv_note = f" Invoices: {', '.join(invoices)}." if invoices else ""
     err = ocr.get("error")
     if err:
         msg = f"Could not read image ({err}). Enter lines manually for {kind}."
-    elif ocr.get("raw_text"):
+    elif raw and register:
+        msg = (
+            f"Detected Quotation / Invoice Register — matched Item Codes to inventory. "
+            f"Review qty, unit cost (Price), then confirm {kind}.{date_note}{inv_note}"
+        )
+    elif raw:
         msg = (
             f"Review OCR rows (each line keeps its own date), select inventory items, "
-            f"then confirm {kind}.{date_note}"
+            f"then confirm {kind}.{date_note}{inv_note}"
         )
     else:
         msg = (
@@ -571,11 +867,12 @@ def preview_sales_photo(
     return {
         "filename": filename,
         "engine": ocr.get("engine") or "none",
-        "raw_text": ocr.get("raw_text") or "",
+        "raw_text": raw,
         "rows": rows,
         "matched_count": matched,
         "unmatched_count": unmatched,
         "total_qty": total_qty,
         "mode": mode,
+        "document_type": "invoice_register" if register else "freeform",
         "message": msg,
     }
