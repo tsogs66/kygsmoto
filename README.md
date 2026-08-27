@@ -222,7 +222,9 @@ When uploading a full `.xlsm` for sales, the importer prefers the **SALES** shee
 A drive sprocket with a **K** in the hub — K for Kygs, the name over the door;
 a sprocket because it is the part a parts-and-service shop actually touches,
 and because a toothed silhouette still reads at 16px in a browser tab where
-finer detail turns to mush.
+finer detail turns to mush. Ten teeth and a heavy letter for the same reason:
+twelve fine teeth blur into a ring at tab size, and a thin stem is the first
+thing to go.
 
 It is drawn in `frontend/src/components/BrandMark.tsx` rather than imported,
 so it inherits the app's colour tokens and stays crisp at any size. The hub is
