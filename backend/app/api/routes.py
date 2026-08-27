@@ -32,6 +32,7 @@ from app.schemas import (
     JobCheckout,
     JobCreate,
     JobLineIn,
+    JobLinesIn,
     JobUpdate,
     CategoryOut,
     CustomerCreate,
@@ -1492,6 +1493,26 @@ def add_job_line(job_id: int, payload: JobLineIn, db: Session = Depends(get_db))
     if job.status not in OPEN_JOB_STATUSES:
         raise HTTPException(409, f"Cannot add work to a {job.status} job")
     job.lines.append(_build_job_line(db, payload))
+    db.commit()
+    return _job_view(db, _get_job(db, job_id))
+
+
+@router.post("/jobs/{job_id}/lines/bulk")
+def add_job_lines(job_id: int, payload: JobLinesIn, db: Session = Depends(get_db)):
+    """Add several lines at once — the till pushing a whole cart onto a ticket.
+
+    All or nothing: one bad line rejects the batch rather than leaving half a
+    cart on the ticket for the counter to reconcile by hand.
+    """
+    job = _get_job(db, job_id)
+    if job.status not in OPEN_JOB_STATUSES:
+        raise HTTPException(409, f"Cannot add work to a {job.status} job")
+    if not payload.lines:
+        raise HTTPException(400, "Nothing to add")
+
+    built = [_build_job_line(db, line) for line in payload.lines]
+    for line in built:
+        job.lines.append(line)
     db.commit()
     return _job_view(db, _get_job(db, job_id))
 

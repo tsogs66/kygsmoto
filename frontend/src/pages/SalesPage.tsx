@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { api, peso } from '../api'
-import type { Customer, HeldSale, Product, Sale } from '../api'
+import { api, JOB_STATUS_LABEL, peso } from '../api'
+import type { Customer, HeldSale, Job, Product, Sale } from '../api'
 import { useSortableRows } from '../hooks/useSortableRows'
 import CustomerSelect from '../components/CustomerSelect'
 
@@ -27,6 +27,9 @@ export default function SalesPage() {
   const [ok, setOk] = useState('')
   const [holds, setHolds] = useState<HeldSale[]>([])
   const [showHold, setShowHold] = useState(false)
+  const [openJobs, setOpenJobs] = useState<Job[]>([])
+  const [showJobs, setShowJobs] = useState(false)
+  const [jobSearch, setJobSearch] = useState('')
   const [holdInfo, setHoldInfo] = useState({
     label: '', customer_name: '', contact: '', plate_no: '', motorcycle: '', note: '',
   })
@@ -47,6 +50,7 @@ export default function SalesPage() {
     }
     const qs = params.toString() ? `?${params}` : ''
     api.holds().then((h) => setHolds(h.holds)).catch(() => undefined)
+    api.jobs('open').then((j) => setOpenJobs(j.jobs)).catch(() => undefined)
     Promise.all([api.products(), api.customers(), api.sales(qs)])
       .then(([p, c, s]) => {
         setProducts(p.filter((x) => x.is_active))
@@ -211,6 +215,48 @@ export default function SalesPage() {
     setOk(`Resumed ${held.reference}`)
     load()
   }
+
+  /**
+   * Send the cart to a bike already in the shop.
+   *
+   * Parts and labour go onto the ticket together and stay there until the
+   * job is paid for, so a chain kit fitted this afternoon ends up on the
+   * customer's one invoice rather than as a separate walk-in sale nobody
+   * can tie back to the bike. Stock does not move here — it moves at
+   * checkout, as it does for every other route onto a ticket.
+   */
+  const addCartToJob = async (job: Job) => {
+    if (!cart.length) {
+      setError('Add at least one item before sending it to a job')
+      return
+    }
+    setError('')
+    try {
+      const updated = await api.addJobLines(job.id, cart.map((l) => ({
+        product_id: l.product.id,
+        quantity: l.quantity,
+        unit_price: l.product.sell_price,
+        discount: l.discount || 0,
+      })))
+      setOk(`${cart.length} line(s) added to ${job.job_no}`
+            + `${job.plate_no ? ` · ${job.plate_no}` : ''}`
+            + ` — ticket now ${peso(updated.total)}`)
+      setCart([])
+      setShowJobs(false)
+      setJobSearch('')
+      load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not add to the job')
+    }
+  }
+
+  const matchingJobs = useMemo(() => {
+    const q = jobSearch.trim().toLowerCase()
+    if (!q) return openJobs
+    return openJobs.filter((j) =>
+      [j.job_no, j.customer_name, j.plate_no, j.motorcycle, j.complaint]
+        .some((f) => (f || '').toLowerCase().includes(q)))
+  }, [openJobs, jobSearch])
 
   const discardHold = async (held: HeldSale) => {
     if (!window.confirm(`Discard ${held.reference}? The basket is lost.`)) return
@@ -460,7 +506,15 @@ export default function SalesPage() {
             </strong>
             <span className="toolbar">
               <button className="btn secondary" type="button"
-                      onClick={() => setShowHold((v) => !v)}>
+                      disabled={!openJobs.length}
+                      title={openJobs.length
+                        ? 'Put these lines on a bike already in the shop'
+                        : 'No bikes in the shop right now'}
+                      onClick={() => { setShowJobs((v) => !v); setShowHold(false) }}>
+                {showJobs ? 'Close job list' : `Add to job (${openJobs.length})`}
+              </button>
+              <button className="btn secondary" type="button"
+                      onClick={() => { setShowHold((v) => !v); setShowJobs(false) }}>
                 {showHold ? 'Cancel hold' : 'Hold sale'}
               </button>
               <button className="btn" type="submit">
@@ -468,6 +522,54 @@ export default function SalesPage() {
               </button>
             </span>
           </div>
+          {showJobs && (
+            <div className="panel" style={{ marginTop: '1rem' }}>
+              <h3>Add to a bike in the shop</h3>
+              <p className="muted">
+                The lines go onto the ticket and are paid for when the job is
+                released. Nothing is rung up here and no stock moves yet.
+              </p>
+              <input placeholder="Job no, customer, plate or bike…"
+                     value={jobSearch}
+                     onChange={(e) => setJobSearch(e.target.value)} />
+              <div className="table-wrap" style={{ marginTop: '0.7rem', maxHeight: 260 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Job</th><th>Customer</th><th>Bike</th>
+                      <th className="num">On ticket</th><th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {!matchingJobs.length && (
+                      <tr><td colSpan={5} className="muted">No open job matches.</td></tr>
+                    )}
+                    {matchingJobs.map((j) => (
+                      <tr key={j.id}>
+                        <td>
+                          <strong>{j.job_no}</strong>
+                          <div className="muted">{JOB_STATUS_LABEL[j.status] || j.status}</div>
+                        </td>
+                        <td>{j.customer_name || 'Walk-in'}</td>
+                        <td>
+                          {j.motorcycle || '—'}
+                          <div className="muted">{j.plate_no}</div>
+                        </td>
+                        <td className="num">{peso(j.total)}</td>
+                        <td className="nowrap">
+                          <button className="btn" type="button"
+                                  onClick={() => addCartToJob(j)}>
+                            Add {cart.length} line(s)
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {showHold && (
             <div className="panel" style={{ marginTop: '1rem' }}>
               <h3>Hold this sale</h3>
