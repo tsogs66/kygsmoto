@@ -10,6 +10,10 @@ import {
 } from 'recharts'
 import { api, peso } from '../api'
 import type { Dashboard, ProductStat } from '../api'
+import {
+  CHART_ACCENT, CHART_GRID, CHART_SECONDARY, CHART_TICK, CHART_TICK_LG,
+  CHART_TOOLTIP,
+} from '../chartTheme'
 
 type Metric = 'amount' | 'qty' | 'profit'
 type PerfPeriod = 'monthly' | 'yearly'
@@ -149,16 +153,17 @@ export default function DashboardPage() {
             <div style={{ width: '100%', height: 300 }}>
               <ResponsiveContainer>
                 <BarChart data={movers} layout="vertical" margin={{ left: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#d5d0c4" />
-                  <XAxis type="number" tick={{ fontSize: 11 }} />
-                  <YAxis type="category" dataKey="name" width={140} tick={{ fontSize: 11 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                  <XAxis type="number" tick={CHART_TICK} />
+                  <YAxis type="category" dataKey="name" width={140} tick={CHART_TICK} />
                   <Tooltip
+                    {...CHART_TOOLTIP}
                     formatter={(v) =>
                       metric === 'qty' ? Number(v).toLocaleString() : peso(Number(v))
                     }
                     labelFormatter={(_, payload) => payload?.[0]?.payload?.full || ''}
                   />
-                  <Bar dataKey="value" fill="#d62828" radius={[0, 6, 6, 0]} />
+                  <Bar dataKey="value" fill={CHART_ACCENT} radius={[0, 6, 6, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -168,16 +173,17 @@ export default function DashboardPage() {
             <div style={{ width: '100%', height: 300 }}>
               <ResponsiveContainer>
                 <BarChart data={profitable} layout="vertical" margin={{ left: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#d5d0c4" />
-                  <XAxis type="number" tick={{ fontSize: 11 }} />
-                  <YAxis type="category" dataKey="name" width={140} tick={{ fontSize: 11 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                  <XAxis type="number" tick={CHART_TICK} />
+                  <YAxis type="category" dataKey="name" width={140} tick={CHART_TICK} />
                   <Tooltip
+                    {...CHART_TOOLTIP}
                     formatter={(v) =>
                       metric === 'qty' ? Number(v).toLocaleString() : peso(Number(v))
                     }
                     labelFormatter={(_, payload) => payload?.[0]?.payload?.full || ''}
                   />
-                  <Bar dataKey="value" fill="#1a1f24" radius={[0, 6, 6, 0]} />
+                  <Bar dataKey="value" fill={CHART_SECONDARY} radius={[0, 6, 6, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -191,11 +197,11 @@ export default function DashboardPage() {
           <div style={{ width: '100%', height: 260 }}>
             <ResponsiveContainer>
               <BarChart data={data.monthly_trend}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#d5d0c4" />
-                <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip formatter={(v) => peso(Number(v))} />
-                <Bar dataKey="total" fill="#d62828" radius={[6, 6, 0, 0]} />
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
+                <XAxis dataKey="label" tick={CHART_TICK_LG} />
+                <YAxis tick={CHART_TICK_LG} />
+                <Tooltip {...CHART_TOOLTIP} formatter={(v) => peso(Number(v))} />
+                <Bar dataKey="total" fill={CHART_ACCENT} radius={[6, 6, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>

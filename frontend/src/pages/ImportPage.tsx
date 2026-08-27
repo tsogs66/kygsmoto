@@ -393,7 +393,7 @@ export default function ImportPage() {
                   style={{
                     whiteSpace: 'pre-wrap',
                     fontSize: '0.8rem',
-                    background: '#f4f1ea',
+                    background: 'var(--surface-2)',
                     padding: '0.75rem',
                     borderRadius: 8,
                     maxHeight: 200,

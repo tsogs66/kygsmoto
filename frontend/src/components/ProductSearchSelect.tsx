@@ -103,10 +103,10 @@ export default function ProductSearchSelect({
             top: '100%',
             maxHeight: 220,
             overflow: 'auto',
-            background: '#fff',
-            border: '1px solid #d5d0c4',
+            background: 'var(--surface-2)',
+            border: '1px solid var(--line)',
             borderRadius: 6,
-            boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+            boxShadow: 'var(--shadow)',
           }}
         >
           {!filtered.length && (
@@ -131,7 +131,7 @@ export default function ProductSearchSelect({
                   width: '100%',
                   textAlign: 'left',
                   border: 0,
-                  background: value === p.id ? '#f4f1ea' : 'transparent',
+                  background: value === p.id ? 'var(--surface-3)' : 'transparent',
                   padding: '0.45rem 0.7rem',
                   cursor: 'pointer',
                   fontSize: '0.85rem',

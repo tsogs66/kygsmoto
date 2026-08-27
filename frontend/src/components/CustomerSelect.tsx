@@ -122,9 +122,9 @@ export default function CustomerSelect({
         <div
           style={{
             position: 'absolute', zIndex: 40, left: 0, right: 0, top: '100%',
-            maxHeight: 300, overflow: 'auto', background: '#fff',
-            border: '1px solid #d5d0c4', borderRadius: 6,
-            boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+            maxHeight: 300, overflow: 'auto', background: 'var(--surface-2)',
+            border: '1px solid var(--line)', borderRadius: 6,
+            boxShadow: 'var(--shadow)',
           }}
         >
           {adding ? (
@@ -179,7 +179,7 @@ export default function CustomerSelect({
                         setAdding(true)
                         setDraft({ name: q.trim(), phone: '', motorcycle_model: '', address: '' })
                       }}
-                      style={{ ...optionStyle, borderTop: '1px solid #eee' }}>
+                      style={{ ...optionStyle, borderTop: '1px solid var(--line)' }}>
                 <strong>+ Add new customer{q.trim() ? ` “${q.trim()}”` : ''}</strong>
               </button>
             </>

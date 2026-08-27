@@ -688,7 +688,7 @@ export default function PurchasesPage() {
             </button>
           </div>
 
-          <div style={{ marginTop: '1rem', paddingTop: '0.8rem', borderTop: '1px solid #e5e0d6' }}>
+          <div style={{ marginTop: '1rem', paddingTop: '0.8rem', borderTop: '1px solid var(--line)' }}>
             <h2 style={{ marginTop: 0 }}>Receipt for this entry</h2>
             <p className="muted">Upload a photo or PDF of the supplier receipt for {editing.po_no}.</p>
             <div className="toolbar">
@@ -806,7 +806,7 @@ export default function PurchasesPage() {
                   style={{
                     whiteSpace: 'pre-wrap',
                     fontSize: '0.8rem',
-                    background: '#f4f1ea',
+                    background: 'var(--surface-2)',
                     padding: '0.75rem',
                     borderRadius: 8,
                     maxHeight: 200,
