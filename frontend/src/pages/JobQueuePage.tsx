@@ -1,16 +1,9 @@
-import { useEffect, useState } from 'react'
-import { api, peso } from '../api'
+import { useEffect, useMemo, useState } from 'react'
+import { api, JOB_STATUS_LABEL as STATUS_LABEL, peso } from '../api'
 import type { Customer, Job, JobBoard, Product } from '../api'
 import ProductSearchSelect from '../components/ProductSearchSelect'
 import CustomerSelect from '../components/CustomerSelect'
 
-const STATUS_LABEL: Record<string, string> = {
-  queued: 'Waiting',
-  in_progress: 'In progress',
-  ready: 'Ready for release',
-  completed: 'Completed',
-  cancelled: 'Cancelled',
-}
 const NEXT_STATUS: Record<string, string> = { queued: 'in_progress', in_progress: 'ready' }
 const NEXT_LABEL: Record<string, string> = { queued: 'Start work', in_progress: 'Mark ready' }
 
@@ -36,9 +29,19 @@ export default function JobQueuePage() {
   })
 
   // Add-work picker on the open ticket
+  const [addKind, setAddKind] = useState<'part' | 'labour'>('part')
   const [addProductId, setAddProductId] = useState('')
   const [addQty, setAddQty] = useState('1')
   const [addDiscount, setAddDiscount] = useState('0')
+
+  /**
+   * The shop's convention: a SKU starting with LABOR is work, not a part.
+   * Splitting the picker by it is the whole point — searching one list of
+   * everything made spare parts look like something a ticket could not take.
+   */
+  const isLabour = (p: Product) => p.sku.toUpperCase().startsWith('LABOR')
+  const parts = useMemo(() => products.filter((p) => !isLabour(p)), [products])
+  const services = useMemo(() => products.filter(isLabour), [products])
 
   const load = async () => {
     setError('')
@@ -96,6 +99,11 @@ export default function JobQueuePage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not update')
     }
+  }
+
+  const chooseKind = (kind: 'part' | 'labour') => {
+    setAddKind(kind)
+    setAddProductId('')
   }
 
   const addWork = async () => {
@@ -408,9 +416,19 @@ export default function JobQueuePage() {
 
             {['queued', 'in_progress', 'ready'].includes(detail.status) && (
               <>
-                <h3>Add work</h3>
+                <h3>Add parts &amp; labour</h3>
+                <div className="toolbar" style={{ marginBottom: '0.5rem' }}>
+                  <button className={`btn ${addKind === 'part' ? '' : 'secondary'}`}
+                          onClick={() => chooseKind('part')}>
+                    Spare parts ({parts.length})
+                  </button>
+                  <button className={`btn ${addKind === 'labour' ? '' : 'secondary'}`}
+                          onClick={() => chooseKind('labour')}>
+                    Services ({services.length})
+                  </button>
+                </div>
                 <div className="toolbar">
-                  <ProductSearchSelect products={products}
+                  <ProductSearchSelect products={addKind === 'part' ? parts : services}
                                        value={addProductId ? Number(addProductId) : null}
                                        onSelect={(id) => setAddProductId(String(id))} />
                   <input type="number" min="1" step="1" value={addQty} style={{ width: 80 }}
@@ -419,8 +437,14 @@ export default function JobQueuePage() {
                   <input type="number" min="0" step="0.01" value={addDiscount}
                          style={{ width: 90 }} title="Discount on this line"
                          onChange={(e) => setAddDiscount(e.target.value)} />
-                  <button className="btn secondary" onClick={addWork}>Add</button>
+                  <button className="btn secondary" disabled={!addProductId}
+                          onClick={addWork}>Add</button>
                 </div>
+                <p className="muted" style={{ fontSize: '0.8rem' }}>
+                  {addKind === 'part'
+                    ? 'Parts stay on the ticket and come off the shelf when the job is paid for.'
+                    : 'Services carry no stock — only the labour charge.'}
+                </p>
 
                 <div className="toolbar" style={{ marginTop: '1rem' }}>
                   {NEXT_STATUS[detail.status] && (

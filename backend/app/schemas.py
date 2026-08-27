@@ -500,6 +500,12 @@ class JobCancel(BaseModel):
     reason: str = Field(min_length=3)
 
 
+class JobLinesIn(BaseModel):
+    """A basket of work added to a ticket in one go — e.g. a cart from the till."""
+
+    lines: list[JobLineIn]
+
+
 class JobCheckout(BaseModel):
     payment_method: str = "cash"
     payment_status: str = "paid"

@@ -132,6 +132,22 @@ export interface ProductForecast {
 
 // ------------------------------------------------------------------- jobs
 
+/** What each ticket status is called at the counter. */
+export const JOB_STATUS_LABEL: Record<string, string> = {
+  queued: 'Waiting',
+  in_progress: 'In progress',
+  ready: 'Ready for release',
+  completed: 'Completed',
+  cancelled: 'Cancelled',
+}
+
+export type JobLineInput = {
+  product_id: number
+  quantity: number
+  unit_price?: number
+  discount?: number
+}
+
 export interface JobLine {
   id: number
   product_id: number
@@ -297,6 +313,13 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ product_id, quantity, discount }),
+    }),
+  /** Push a whole cart onto a ticket in one call — all lines or none. */
+  addJobLines: (id: number, lines: JobLineInput[]) =>
+    request<Job>(`/jobs/${id}/lines/bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lines }),
     }),
   removeJobLine: (id: number, lineId: number) =>
     request<Job>(`/jobs/${id}/lines/${lineId}`, { method: 'DELETE' }),

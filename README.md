@@ -33,6 +33,8 @@ The original Excel+VBA pattern (seen in open systems like [Sales_Inventory_Track
 - **Backdate sales** on POS with a sale date/time picker
 - **Job queue** for bikes in the shop — parts and labour on one ticket, stock moves at checkout
 - **Held sales** — park a basket at the till, identified by customer/plate, and it *reserves* its parts
+- **Till → job ticket** — send a cart of parts and labour onto a bike already in
+  the shop, so it lands on that customer's one invoice
 - **Handwritten sales photo scan** (OCR) with editable review — correct qty/price/date and select inventory items before import
 - PWA install for Android; Docker image for Proxmox LXC (includes Tesseract OCR)
 - **No internet needed to look right** — fonts ship inside the image, so the
@@ -208,6 +210,8 @@ When uploading a full `.xlsm` for sales, the importer prefers the **SALES** shee
 | GET/POST | `/api/holds` | Park a basket at the till; reserves its parts |
 | DELETE | `/api/holds/{id}` | Discard or clear a hold, releasing its claim |
 | GET/POST | `/api/jobs` | Job tickets for bikes in the shop |
+| POST | `/api/jobs/{id}/lines` | Add one part or labour line to a ticket |
+| POST | `/api/jobs/{id}/lines/bulk` | Add a whole cart at once — all lines or none |
 | POST | `/api/jobs/{id}/checkout` | Turn a finished job into a sale |
 | POST | `/api/purchases` | Receive stock |
 | POST | `/api/imports/sales/preview` | Preview sales file |

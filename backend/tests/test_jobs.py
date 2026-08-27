@@ -244,3 +244,73 @@ class TestBoard:
         _new_job(client, shop, plate_no="XYZ 9999")
         found = client.get("/api/jobs", params={"q": "XYZ 9999"}).json()["jobs"]
         assert found and found[0]["plate_no"] == "XYZ 9999"
+
+
+class TestAddingACartToATicket:
+    """The till pushes a whole basket onto a bike already in the shop.
+
+    Parts and labour arrive together on one call, so a counter that has just
+    rung up a chain kit and a fitting charge does not have to add them one at
+    a time and hope nothing was missed.
+    """
+
+    def _bulk(self, client, job_id, lines):
+        return client.post(f"/api/jobs/{job_id}/lines/bulk", json={"lines": lines})
+
+    def test_a_cart_of_parts_and_labour_lands_in_one_call(self, client, shop):
+        job = _new_job(client, shop, lines=[])
+        res = self._bulk(client, job["id"], [
+            {"product_id": shop["part_id"], "quantity": 2},
+            {"product_id": shop["labour_id"], "quantity": 1},
+        ])
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["line_count"] == 2
+        assert body["parts_total"] == 400      # 2 x 200
+        assert body["labour_total"] == 150
+
+    def test_lines_are_added_to_what_is_already_there(self, client, shop):
+        job = _new_job(client, shop)           # opens with 2 parts + 1 labour
+        assert job["line_count"] == 2
+        body = self._bulk(client, job["id"], [
+            {"product_id": shop["part_id"], "quantity": 1},
+        ]).json()
+        assert body["line_count"] == 3, "the cart adds to the ticket, it does not replace it"
+
+    def test_discounts_survive_the_trip(self, client, shop):
+        job = _new_job(client, shop, lines=[])
+        body = self._bulk(client, job["id"], [
+            {"product_id": shop["part_id"], "quantity": 2, "discount": 50},
+        ]).json()
+        assert body["discount_total"] == 50
+        assert body["total"] == 350
+
+    def test_pushing_a_cart_does_not_move_stock(self, client, shop):
+        """Stock still moves at checkout and nowhere else."""
+        before = _stock(client, shop["part_id"])
+        job = _new_job(client, shop, lines=[])
+        self._bulk(client, job["id"], [{"product_id": shop["part_id"], "quantity": 3}])
+        assert _stock(client, shop["part_id"]) == before
+
+    def test_one_bad_line_rejects_the_whole_cart(self, client, shop):
+        job = _new_job(client, shop, lines=[])
+        res = self._bulk(client, job["id"], [
+            {"product_id": shop["part_id"], "quantity": 1},
+            {"product_id": 999999, "quantity": 1},
+        ])
+        assert res.status_code == 400
+        after = client.get(f"/api/jobs/{job['id']}").json()
+        assert after["line_count"] == 0, "half a cart on the ticket is worse than none"
+
+    def test_an_empty_cart_is_refused(self, client, shop):
+        job = _new_job(client, shop, lines=[])
+        assert self._bulk(client, job["id"], []).status_code == 400
+
+    def test_a_closed_ticket_takes_nothing(self, client, shop):
+        job = _new_job(client, shop)
+        client.post(f"/api/jobs/{job['id']}/checkout", json={})
+        res = self._bulk(client, job["id"], [
+            {"product_id": shop["part_id"], "quantity": 1},
+        ])
+        assert res.status_code == 409
+        assert "completed" in res.json()["detail"]
