@@ -7,7 +7,8 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg'],
+      includeAssets: ['favicon.svg', 'icon-192.png', 'icon-512.png',
+                      'icon-maskable-512.png'],
       workbox: {
         // Default globs miss woff2, which would leave an installed app
         // re-fetching its own fonts on every cold start.
@@ -23,12 +24,13 @@ export default defineConfig({
         orientation: 'any',
         start_url: '/',
         icons: [
-          {
-            src: 'favicon.svg',
-            sizes: 'any',
-            type: 'image/svg+xml',
-            purpose: 'any maskable',
-          },
+          { src: 'favicon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+          { src: 'icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          // Separate art: a launcher may crop a maskable icon to a circle, and
+          // the sprocket's teeth run to the edge of the 'any' tile.
+          { src: 'icon-maskable-512.png', sizes: '512x512', type: 'image/png',
+            purpose: 'maskable' },
         ],
       },
     }),

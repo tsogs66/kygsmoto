@@ -1,4 +1,5 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
+import BrandMark from './components/BrandMark'
 import DashboardPage from './pages/DashboardPage'
 import InventoryPage from './pages/InventoryPage'
 import SalesPage from './pages/SalesPage'
@@ -24,10 +25,10 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
+          <BrandMark />
           <span className="brand-mark">
-            KYG<span>SMOTO</span>
+            KYGS<span>MOTO</span>
           </span>
-          <span className="brand-sub">Sales · Inventory · Reports</span>
         </div>
         <nav className="nav-links">
           {links.map((link) => (
