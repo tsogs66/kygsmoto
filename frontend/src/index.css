@@ -164,6 +164,19 @@ textarea {
   gap: 1rem;
 }
 
+/* A grid item's default min-width is auto, so it refuses to shrink below its
+   content's minimum, and on a phone that pushes the whole page sideways.
+   Two things trip it here: the tables in these panels set white-space:
+   nowrap, giving them a min-content of several hundred pixels; and a <select>
+   takes its intrinsic width from its longest option, so one long product name
+   widens the column it sits in. Letting the items shrink puts the scrolling
+   back where it belongs — inside .table-wrap — and lets a select truncate its
+   closed state while its dropdown still shows names in full. */
+.grid > *,
+.form-grid > * {
+  min-width: 0;
+}
+
 .grid-4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
