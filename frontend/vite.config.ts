@@ -8,6 +8,11 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg'],
+      workbox: {
+        // Default globs miss woff2, which would leave an installed app
+        // re-fetching its own fonts on every cold start.
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+      },
       manifest: {
         name: 'KYGSMOTO Sales & Inventory',
         short_name: 'KYGSMOTO',
